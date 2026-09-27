@@ -129,6 +129,8 @@ pub enum ProgressEvent {
     },
     AiReviewStarted {
         patches: usize,
+        main_model: String,
+        validation_model: Option<String>,
     },
     AiReviewPreScreenStarted {
         patch_index: i64,
@@ -1028,6 +1030,12 @@ async fn run_worker_in_worktree(
         progress,
         ProgressEvent::AiReviewStarted {
             patches: patches_to_review.len(),
+            main_model: settings.ai.model.clone(),
+            validation_model: settings
+                .ai
+                .validation
+                .as_ref()
+                .map(|validation| validation.model.clone()),
         },
     );
 
@@ -1301,7 +1309,7 @@ pub fn progress_to_stderr(event: ProgressEvent) {
 /// the worker's log lines already cover.
 pub fn progress_line(event: ProgressEvent) -> Option<String> {
     let line = match event {
-        ProgressEvent::AiReviewStarted { patches } => format!(
+        ProgressEvent::AiReviewStarted { patches, .. } => format!(
             "reviewing {} patch{}",
             patches,
             if patches == 1 { "" } else { "es" }

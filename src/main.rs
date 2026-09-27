@@ -1913,6 +1913,8 @@ fn watch_for_resize(
 
 struct ProgressState {
     project: ProjectId,
+    main_model: Option<String>,
+    validation_model: Option<String>,
     patches: std::collections::BTreeMap<i64, PatchState>,
     /// The status each patch was last reported with, so the appending display
     /// speaks only when one of them changes.
@@ -2186,14 +2188,30 @@ fn on_stderr(
 /// Describes what a patch is doing. `with_turns` adds the turn counter, which
 /// changes on every model call and so is only of use to a display that draws
 /// over what it said last.
-fn status_label(project: ProjectId, p: &PatchState, with_turns: bool) -> String {
+fn status_label(state: &ProgressState, p: &PatchState, with_turns: bool) -> String {
+    let model = |stage: &str| {
+        if matches!(stage, "verification" | "post-verification")
+            || stage.starts_with("post-verification-")
+        {
+            state
+                .validation_model
+                .as_ref()
+                .or(state.main_model.as_ref())
+        } else {
+            state.main_model.as_ref()
+        }
+    };
+    let with_model = |label: String, stage: &str| match model(stage) {
+        Some(model) => format!("{label} [{model}]"),
+        None => label,
+    };
     match &p.status {
         PatchStatus::Queued => "Queued".to_string(),
-        PatchStatus::PreScreening => "Pre-screening guides...".to_string(),
-        PatchStatus::Planning => "Planning stages...".to_string(),
+        PatchStatus::PreScreening => with_model("Pre-screening guides...".to_string(), ""),
+        PatchStatus::Planning => with_model("Planning stages...".to_string(), ""),
         PatchStatus::Reviewing => {
             if p.active_stages.is_empty() {
-                "Reviewing...".to_string()
+                with_model("Reviewing...".to_string(), "")
             } else {
                 // A repainting frame leads with the busiest stage, the turn
                 // counter beside it saying why that one. Dropping the counter has
@@ -2212,12 +2230,13 @@ fn status_label(project: ProjectId, p: &PatchState, with_turns: bool) -> String 
                     .min_by_key(|stage| busiest(stage))
                     .expect("a stage, the set is not empty");
                 let top_turn = p.active_stage_turns.get(top_stage).copied().unwrap_or(0);
-                let stage_name = stage_short_name(project, top_stage);
+                let stage_name = stage_short_name(state.project, top_stage);
                 let stage_str = if with_turns && top_turn > 0 {
                     format!("{} (turn {})", stage_name, top_turn)
                 } else {
                     stage_name.to_string()
                 };
+                let stage_str = with_model(stage_str, top_stage);
 
                 if p.active_stages.len() > 1 {
                     format!("{} (+{} stages)", stage_str, p.active_stages.len() - 1)
@@ -2244,7 +2263,7 @@ fn paint_progress_plain(
     out: &mut impl WriteColor,
 ) -> std::io::Result<()> {
     for (&idx, p) in &state.patches {
-        let label = status_label(state.project, p, false);
+        let label = status_label(state, p, false);
         if state.last_status.get(&idx) == Some(&label) {
             continue;
         }
@@ -2426,7 +2445,7 @@ fn paint_progress(state: &mut ProgressState, out: &mut impl WriteColor) -> std::
 
     for (&idx, p) in &state.patches {
         write!(out, "\x1b[{};1H\x1b[2K", top + lines_printed)?;
-        let status_str = status_label(state.project, p, true);
+        let status_str = status_label(state, p, true);
 
         // Calculate available width for subject to guarantee status is never truncated
         let fixed_overhead = 16 + 3; // "      [Patch X] " + " | "
@@ -2621,6 +2640,8 @@ async fn handle_review_command(
 
     let progress_state = std::sync::Arc::new(std::sync::Mutex::new(ProgressState {
         project,
+        main_model: None,
+        validation_model: None,
         patches: std::collections::BTreeMap::new(),
         total_turns: 0,
         last_status: std::collections::BTreeMap::new(),
@@ -2675,7 +2696,13 @@ async fn handle_review_command(
             ProgressEvent::PatchFailed { index, error } => {
                 eprintln!("   Failed to apply patch {}: {}", index, error);
             }
-            ProgressEvent::AiReviewStarted { patches } => {
+            ProgressEvent::AiReviewStarted {
+                patches,
+                main_model,
+                validation_model,
+            } => {
+                s.main_model = Some(main_model);
+                s.validation_model = validation_model;
                 eprintln!(
                     "Running review for {} patch{}",
                     patches,
@@ -4431,6 +4458,8 @@ mod tests {
     fn progress_state(display: OutputStream) -> ProgressState {
         ProgressState {
             project: ProjectId::Linux,
+            main_model: None,
+            validation_model: None,
             patches: std::collections::BTreeMap::new(),
             last_status: std::collections::BTreeMap::new(),
             total_turns: 0,
@@ -5083,40 +5112,77 @@ mod tests {
 
     #[test]
     fn test_status_label_drops_the_turn_counter_when_not_repainting() {
+        let state = progress_state(appending((24, 80)));
         let mut p = patch_state(PatchStatus::Reviewing);
         p.active_stages.insert("locking".to_string());
         p.active_stage_turns.insert("locking".to_string(), 3);
 
-        assert_eq!(
-            status_label(ProjectId::Linux, &p, true),
-            "Locking & Sync (turn 3)"
-        );
-        assert_eq!(status_label(ProjectId::Linux, &p, false), "Locking & Sync");
+        assert_eq!(status_label(&state, &p, true), "Locking & Sync (turn 3)");
+        assert_eq!(status_label(&state, &p, false), "Locking & Sync");
 
         // A repainting frame still leads with the busiest stage, since the counter
         // it shows says why that one leads. Security overtakes locking here.
         p.active_stages.insert("security".to_string());
         p.active_stage_turns.insert("security".to_string(), 9);
         assert_eq!(
-            status_label(ProjectId::Linux, &p, true),
+            status_label(&state, &p, true),
             "Security Audit (turn 9) (+1 stages)"
         );
 
         // Without the counter the set's own order decides, so the line holds still
         // while the counters move underneath it.
         assert_eq!(
-            status_label(ProjectId::Linux, &p, false),
+            status_label(&state, &p, false),
             "Locking & Sync (+1 stages)"
         );
         p.active_stage_turns.insert("locking".to_string(), 40);
         assert_eq!(
-            status_label(ProjectId::Linux, &p, false),
+            status_label(&state, &p, false),
             "Locking & Sync (+1 stages)"
         );
 
         // It changes when the set changes, which is what the line is for.
         p.active_stages.remove("locking");
-        assert_eq!(status_label(ProjectId::Linux, &p, false), "Security Audit");
+        assert_eq!(status_label(&state, &p, false), "Security Audit");
+    }
+
+    #[test]
+    fn test_status_label_shows_model_for_active_stage() {
+        let mut state = progress_state(appending((24, 80)));
+        state.main_model = Some("gemma-4-31b-it".to_string());
+        state.validation_model = Some("openai/openai/gpt-6-astra".to_string());
+        let mut p = patch_state(PatchStatus::Planning);
+        assert_eq!(
+            status_label(&state, &p, false),
+            "Planning stages... [gemma-4-31b-it]"
+        );
+
+        p.status = PatchStatus::Reviewing;
+        p.active_stages.insert("post-verification-1".to_string());
+        assert_eq!(
+            status_label(&state, &p, false),
+            "Post-Verification [openai/openai/gpt-6-astra]"
+        );
+
+        p.active_stages.clear();
+        p.active_stages.insert("verification".to_string());
+        assert_eq!(
+            status_label(&state, &p, false),
+            "Verification [openai/openai/gpt-6-astra]"
+        );
+
+        state.validation_model = None;
+        assert_eq!(
+            status_label(&state, &p, false),
+            "Verification [gemma-4-31b-it]"
+        );
+
+        p.active_stages.clear();
+        p.active_stages.insert("post-verification-1".to_string());
+        assert_eq!(
+            status_label(&state, &p, false),
+            "Post-Verification [gemma-4-31b-it]"
+        );
     }
 
     #[test]
@@ -5147,7 +5213,10 @@ mod tests {
 
         done.status = PatchStatus::Failed;
         assert_eq!(total(&done), 4);
-        assert_eq!(status_label(ProjectId::Linux, &done, false), "Incomplete");
+        assert_eq!(
+            status_label(&progress_state(appending((24, 80))), &done, false),
+            "Incomplete"
+        );
     }
 
     #[test]
