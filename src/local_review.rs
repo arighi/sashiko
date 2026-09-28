@@ -166,7 +166,12 @@ pub enum ProgressEvent {
     AiReviewFinished {
         patch_index: i64,
     },
-    ReviewComplete,
+    AiReviewFailed {
+        patch_index: i64,
+    },
+    ReviewComplete {
+        partial: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -419,7 +424,12 @@ pub async fn run_worker(
     {
         error!("Failed to remove worktree: {}", e);
     }
-    emit(progress, ProgressEvent::ReviewComplete);
+    emit(
+        progress,
+        ProgressEvent::ReviewComplete {
+            partial: result.as_ref().map_or(true, result_has_error),
+        },
+    );
 
     result
 }
@@ -693,7 +703,36 @@ async fn review_single_patch(
         }
     }
 
+    emit(
+        progress,
+        ProgressEvent::AiReviewFailed {
+            patch_index: p.index,
+        },
+    );
     Err(last_error.unwrap_or_else(|| anyhow!("Patch review failed")))
+}
+
+/// Lists the failed patches in series order.
+fn combined_review_error(mut errors: Vec<(i64, String)>) -> String {
+    errors.sort_by_key(|(patch_index, _)| *patch_index);
+    errors
+        .iter()
+        .map(|(patch_index, err)| format!("patch {patch_index}: {err}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Records a patch whose review failed, so the report does not present it as
+/// reviewed.
+fn mark_patch_review_incomplete(patches: &mut [Value], patch_index: i64, error: &str) {
+    if let Some(patch) = patches
+        .iter_mut()
+        .find(|patch| patch["index"].as_i64() == Some(patch_index))
+        && let Some(fields) = patch.as_object_mut()
+    {
+        fields.insert("review_status".into(), json!("incomplete"));
+        fields.insert("review_error".into(), json!(error));
+    }
 }
 
 /// Assembles the combined review payload for a review.
@@ -928,7 +967,7 @@ async fn run_worker_in_worktree(
         let llm_semaphore = &llm_semaphore;
         let quota = &quota;
         async move {
-            review_single_patch(
+            let result = review_single_patch(
                 worktree,
                 ai,
                 patchset_id,
@@ -944,14 +983,25 @@ async fn run_worker_in_worktree(
                 timeout_seconds,
                 progress,
             )
-            .await
+            .await;
+            (p.index, result)
         }
     }));
 
+    // A failed patch must not discard the reviews of the other patches, so
+    // collect every result and report the failures alongside them.
     let mut buffered = futures_stream.buffer_unordered(concurrency);
     let mut results = Vec::new();
-    while let Some(res) = buffered.next().await {
-        results.push(res?);
+    let mut review_errors = Vec::new();
+    while let Some((patch_index, result)) = buffered.next().await {
+        match result {
+            Ok(res) => results.push(res),
+            Err(err) => {
+                let err = err.to_string();
+                mark_patch_review_incomplete(&mut patch_results, patch_index, &err);
+                review_errors.push((patch_index, err));
+            }
+        }
     }
 
     // Aggregate findings, inline reviews, history, input context, and concern counts
@@ -1062,18 +1112,25 @@ async fn run_worker_in_worktree(
         total_dismissed_concerns_count,
     );
 
-    let combined_result = json!({
+    let mut combined_result = json!({
         "patchset_id": patchset_id,
         "baseline": baseline_arg,
         "patches": patch_results,
         "review": review_output,
-        "inline_review": if combined_inline.is_empty() { "No issues found.".to_string() } else { combined_inline },
+        "inline_review": if combined_inline.is_empty() && review_errors.is_empty() { "No issues found.".to_string() } else { combined_inline },
         "history": combined_history,
         "input_context": combined_input_context,
         "tokens_in": total_tokens_in,
         "tokens_out": total_tokens_out,
         "tokens_cached": total_tokens_cached
     });
+
+    if !review_errors.is_empty()
+        && let Some(fields) = combined_result.as_object_mut()
+    {
+        fields.insert("partial".into(), json!(true));
+        fields.insert("error".into(), json!(combined_review_error(review_errors)));
+    }
 
     Ok(combined_result)
 }
@@ -1139,6 +1196,7 @@ pub fn progress_line(event: ProgressEvent) -> Option<String> {
             max_attempts,
         } if attempt > 1 => format!("patch {patch_index}: retry {attempt}/{max_attempts}"),
         ProgressEvent::AiReviewFinished { patch_index } => format!("patch {patch_index}: done"),
+        ProgressEvent::AiReviewFailed { patch_index } => format!("patch {patch_index}: incomplete"),
         _ => return None,
     };
     Some(line)
@@ -1938,6 +1996,27 @@ mod tests {
     }
 
     #[test]
+    fn combined_review_error_orders_patches_numerically() {
+        let errors = vec![
+            (10, "timed out".to_string()),
+            (2, "output truncated".to_string()),
+        ];
+        assert_eq!(
+            combined_review_error(errors),
+            "patch 2: output truncated; patch 10: timed out"
+        );
+    }
+
+    #[test]
+    fn patch_status_marks_only_incomplete_reviews() {
+        let mut patches = vec![json!({"index": 1}), json!({"index": 2})];
+        mark_patch_review_incomplete(&mut patches, 2, "output truncated");
+        assert!(patches[0].get("review_status").is_none());
+        assert_eq!(patches[1]["review_status"], "incomplete");
+        assert_eq!(patches[1]["review_error"], "output truncated");
+    }
+
+    #[test]
     fn test_worker_progress_lines_are_what_the_cli_keys_on() {
         // sashiko-cli local strips PROGRESS_LINE_PREFIX and treats a line
         // containing " turn " as a tick to overwrite rather than print.
@@ -1973,6 +2052,10 @@ mod tests {
                     max_attempts: 3,
                 },
                 "patch 1: retry 2/3",
+            ),
+            (
+                ProgressEvent::AiReviewFailed { patch_index: 1 },
+                "patch 1: incomplete",
             ),
         ] {
             let line = progress_line(event).unwrap();
