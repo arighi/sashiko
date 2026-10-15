@@ -573,3 +573,15 @@ base_url = "https://llm-gateway.example.com/v1"
 export LLM_CLIENT_API_KEY=...
 ```
 
+Some gateways also expect client metadata in the request body. Add it
+under `[ai.openai_compat.extra_body]`; its fields are merged into the top
+level of every request. Fields Sashiko sets itself, such as `model` or
+`messages`, are rejected at startup:
+
+```toml
+[ai.openai_compat.extra_body]
+extraData = { clientName = "sashiko", sessionId = "review" }
+```
+
+Unlike header values, body fields are read from the settings file, so
+do not put credentials in them.

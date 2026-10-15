@@ -26,6 +26,20 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+/// Top-level request fields Sashiko sets itself. Extra body fields may
+/// not name them: overriding the model or the messages from configuration
+/// would silently change what every stage asks for.
+const RESERVED_REQUEST_FIELDS: &[&str] = &[
+    "model",
+    "messages",
+    "tools",
+    "temperature",
+    "max_tokens",
+    "max_completion_tokens",
+    "response_format",
+    "reasoning_effort",
+];
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenAiRequest {
     pub model: String,
@@ -224,6 +238,7 @@ pub struct OpenAiCompatClient {
     send_reasoning_content: bool,
     client: Client,
     extra_headers: reqwest::header::HeaderMap,
+    extra_body: serde_json::Map<String, Value>,
     temperature_unsupported: AtomicBool,
 }
 
@@ -267,6 +282,7 @@ impl OpenAiCompatClient {
             send_reasoning_content: false,
             client,
             extra_headers: reqwest::header::HeaderMap::new(),
+            extra_body: serde_json::Map::new(),
             temperature_unsupported: AtomicBool::new(false),
         })
     }
@@ -298,6 +314,25 @@ impl OpenAiCompatClient {
             self.extra_headers.insert(header_name, header_value);
         }
         Ok(self)
+    }
+
+    pub fn with_extra_body(mut self, fields: serde_json::Map<String, Value>) -> Result<Self> {
+        if let Some(field) = fields
+            .keys()
+            .find(|key| RESERVED_REQUEST_FIELDS.contains(&key.as_str()))
+        {
+            anyhow::bail!("extra_body may not set {field:?}, which Sashiko sets itself");
+        }
+        self.extra_body = fields;
+        Ok(self)
+    }
+
+    fn request_body(&self, request: &OpenAiRequest) -> Result<Value> {
+        let mut body = serde_json::to_value(request)?;
+        if let Some(object) = body.as_object_mut() {
+            object.extend(self.extra_body.clone());
+        }
+        Ok(body)
     }
 
     fn prepare_request(&self, request: AiRequest) -> Result<OpenAiRequest> {
@@ -628,6 +663,26 @@ fn translate_ai_request(
     })
 }
 
+/// serde_json keeps insertion order and the settings loader builds
+/// tables from hash maps so return sorted json otherwise cache may be
+/// random between runs
+fn sorted_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries: Vec<_> = object.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), sorted_json(value)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted_json).collect()),
+        other => other.clone(),
+    }
+}
+
 fn translate_ai_response(resp: OpenAiResponse) -> Result<AiResponse> {
     let choice = resp
         .choices
@@ -704,7 +759,7 @@ impl AiProvider for OpenAiCompatClient {
         tracing::info!("Sending OpenAI request...");
 
         let mut openai_req = self.prepare_request(request)?;
-        let resp_body = serde_json::to_value(&openai_req)?;
+        let resp_body = self.request_body(&openai_req)?;
         let resp = match self.post_request(&resp_body).await {
             Ok(resp) => resp,
             Err(error)
@@ -716,7 +771,7 @@ impl AiProvider for OpenAiCompatClient {
                     crate::ai::get_log_prefix()
                 );
                 openai_req.temperature = None;
-                let retry_body = serde_json::to_value(&openai_req)?;
+                let retry_body = self.request_body(&openai_req)?;
                 self.post_request(&retry_body).await?
             }
             Err(error) => return Err(error.into()),
@@ -746,13 +801,17 @@ impl AiProvider for OpenAiCompatClient {
         // setting enters the identity only when on, so other entries stay
         // valid. Extra headers enter by name only: their values are
         // credentials that must stay out of the cache file, and a header
-        // whose value steers the reply is not supported.
+        // whose value steers the reply is not supported. Extra body fields can
+        // change the reply (a routing hint), so they join the identity in a
+        // key order that does not depend on how the settings were parsed.
         let max_tokens = self.max_tokens.to_string();
         let extra_headers = (!self.extra_headers.is_empty()).then(|| {
             let mut names: Vec<&str> = self.extra_headers.keys().map(|n| n.as_str()).collect();
             names.sort_unstable();
             names.join(",")
         });
+        let extra_body = (!self.extra_body.is_empty())
+            .then(|| sorted_json(&Value::Object(self.extra_body.clone())).to_string());
         let provider_type = match self.provider_type {
             OpenAiProviderType::OpenAi => "openai",
             OpenAiProviderType::OpenAiCompatible => "openai-compatible",
@@ -769,6 +828,7 @@ impl AiProvider for OpenAiCompatClient {
                     self.send_reasoning_content.then_some("true"),
                 ),
                 ("extra_headers", extra_headers.as_deref()),
+                ("extra_body", extra_body.as_deref()),
             ],
         )
     }
@@ -1844,6 +1904,94 @@ mod tests {
         assert_eq!(headers["x-api-key"], "client-key");
         assert_eq!(headers["authorization"], "Gateway token");
         assert_eq!(headers.get_all("authorization").iter().count(), 1);
+        server.abort();
+        Ok(())
+    }
+
+    #[test]
+    fn reserved_request_fields_cover_every_request_field() -> Result<()> {
+        let request = OpenAiRequest {
+            model: String::new(),
+            messages: vec![],
+            tools: Some(vec![]),
+            temperature: Some(0.0),
+            max_tokens: Some(1),
+            max_completion_tokens: Some(1),
+            response_format: Some(json!({})),
+            reasoning_effort: Some(String::new()),
+        };
+        let body = serde_json::to_value(&request)?;
+        let mut fields: Vec<&str> = body
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.keys().map(String::as_str))
+            .collect();
+        let mut reserved = RESERVED_REQUEST_FIELDS.to_vec();
+        fields.sort_unstable();
+        reserved.sort_unstable();
+        assert_eq!(fields, reserved);
+        Ok(())
+    }
+
+    #[test]
+    fn extra_body_rejects_reserved_fields() {
+        let fields = |key: &str| {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_string(), json!("x"));
+            map
+        };
+        let client = || test_client("https://api.openai.com/v1", 4096, None);
+
+        assert!(client().with_extra_body(fields("client_name")).is_ok());
+        assert!(client().with_extra_body(fields("model")).is_err());
+        assert!(client().with_extra_body(fields("messages")).is_err());
+        assert!(
+            client()
+                .with_extra_body(fields("reasoning_effort"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cache_identity_tracks_extra_body_in_any_key_order() -> Result<()> {
+        let body = |raw: &str| -> Result<serde_json::Map<String, Value>> {
+            Ok(serde_json::from_str(raw)?)
+        };
+        let plain = test_client("https://api.openai.com/v1", 4096, None);
+        let ab = test_client("https://api.openai.com/v1", 4096, None)
+            .with_extra_body(body(r#"{"a": 1, "b": {"x": 1, "y": 2}}"#)?)?;
+        let ba = test_client("https://api.openai.com/v1", 4096, None)
+            .with_extra_body(body(r#"{"b": {"y": 2, "x": 1}, "a": 1}"#)?)?;
+        assert_ne!(plain.cache_identity(), ab.cache_identity());
+        assert_eq!(ab.cache_identity(), ba.cache_identity());
+        Ok(())
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn extra_body_fields_are_merged_into_every_request() -> Result<()> {
+        let (base_url, captured, server) = capturing_server().await?;
+        let extra_body = serde_json::from_value(json!({
+            "extraData": {"clientName": "sashiko", "sessionId": "review-1"}
+        }))?;
+        let client = OpenAiCompatClient::new(
+            base_url,
+            OpenAiProviderType::OpenAiCompatible,
+            "test-model".to_string(),
+            8192,
+            128,
+            5,
+            None,
+        )?
+        .with_extra_body(extra_body)?;
+
+        client.generate_content(empty_request()).await?;
+
+        let requests = captured.lock().await;
+        let (_, body) = &requests[0];
+        assert_eq!(body["model"], "test-model");
+        assert_eq!(body["extraData"]["clientName"], "sashiko");
+        assert_eq!(body["extraData"]["sessionId"], "review-1");
         server.abort();
         Ok(())
     }

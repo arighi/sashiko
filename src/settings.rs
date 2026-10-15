@@ -508,6 +508,11 @@ pub struct OpenAiCompatSettings {
     /// header named here replaces the one Sashiko would send.
     #[serde(default)]
     pub extra_headers: std::collections::BTreeMap<String, String>,
+    /// Top-level JSON fields added to every request body, for gateways
+    /// that expect client metadata in the payload. Fields Sashiko sets
+    /// itself are rejected rather than overridden.
+    #[serde(default)]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
