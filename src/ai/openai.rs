@@ -240,6 +240,7 @@ pub struct OpenAiCompatClient {
     extra_headers: reqwest::header::HeaderMap,
     extra_body: serde_json::Map<String, Value>,
     temperature_unsupported: AtomicBool,
+    send_empty_tool_call_content: bool,
 }
 
 impl OpenAiCompatClient {
@@ -284,6 +285,7 @@ impl OpenAiCompatClient {
             extra_headers: reqwest::header::HeaderMap::new(),
             extra_body: serde_json::Map::new(),
             temperature_unsupported: AtomicBool::new(false),
+            send_empty_tool_call_content: false,
         })
     }
 
@@ -335,6 +337,11 @@ impl OpenAiCompatClient {
         Ok(body)
     }
 
+    pub fn with_empty_tool_call_content(mut self, enabled: bool) -> Self {
+        self.send_empty_tool_call_content = enabled;
+        self
+    }
+
     fn prepare_request(&self, request: AiRequest) -> Result<OpenAiRequest> {
         let mut openai_req = translate_ai_request(
             request,
@@ -343,6 +350,9 @@ impl OpenAiCompatClient {
             self.send_reasoning_content,
         )?;
         openai_req.model = self.model.clone();
+        if self.send_empty_tool_call_content {
+            fill_empty_tool_call_content(&mut openai_req.messages);
+        }
         if self.temperature_unsupported.load(Ordering::Relaxed) {
             openai_req.temperature = None;
         }
@@ -683,6 +693,14 @@ fn sorted_json(value: &Value) -> Value {
     }
 }
 
+fn fill_empty_tool_call_content(messages: &mut [OpenAiMessage]) {
+    for message in messages {
+        if message.role == "assistant" && message.tool_calls.is_some() {
+            message.content.get_or_insert_default();
+        }
+    }
+}
+
 fn translate_ai_response(resp: OpenAiResponse) -> Result<AiResponse> {
     let choice = resp
         .choices
@@ -804,6 +822,10 @@ impl AiProvider for OpenAiCompatClient {
         // whose value steers the reply is not supported. Extra body fields can
         // change the reply (a routing hint), so they join the identity in a
         // key order that does not depend on how the settings were parsed.
+        //
+        // The empty tool-call content changes the prompt the model sees
+        // on chat templates that render the missing field, so it joins
+        // the identity, but only when enabled to keep existing entries.
         let max_tokens = self.max_tokens.to_string();
         let extra_headers = (!self.extra_headers.is_empty()).then(|| {
             let mut names: Vec<&str> = self.extra_headers.keys().map(|n| n.as_str()).collect();
@@ -829,6 +851,10 @@ impl AiProvider for OpenAiCompatClient {
                 ),
                 ("extra_headers", extra_headers.as_deref()),
                 ("extra_body", extra_body.as_deref()),
+                (
+                    "empty_tool_call_content",
+                    self.send_empty_tool_call_content.then_some("true"),
+                ),
             ],
         )
     }
@@ -1737,6 +1763,71 @@ mod tests {
         let off = test_client("https://api.openai.com/v1", 4096, None);
         let on = test_client("https://api.openai.com/v1", 4096, None).with_reasoning_content(true);
         assert_ne!(off.cache_identity(), on.cache_identity());
+    }
+
+    #[test]
+    fn cache_identity_tracks_empty_tool_call_content() {
+        let plain = test_client("https://api.openai.com/v1", 4096, None);
+        let filled =
+            test_client("https://api.openai.com/v1", 4096, None).with_empty_tool_call_content(true);
+        assert_ne!(plain.cache_identity(), filled.cache_identity());
+    }
+
+    fn tool_call_request(content: Option<&str>) -> AiRequest {
+        AiRequest {
+            system: None,
+            messages: vec![
+                AiMessage {
+                    role: AiRole::Assistant,
+                    content: content.map(str::to_string),
+                    thought: None,
+                    thought_signature: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_1".to_string(),
+                        function_name: "read_file".to_string(),
+                        arguments: json!({}),
+                        thought_signature: None,
+                    }]),
+                    tool_call_id: None,
+                },
+                AiMessage {
+                    role: AiRole::Assistant,
+                    content: None,
+                    thought: None,
+                    thought_signature: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: None,
+            temperature: None,
+            response_format: None,
+            context_tag: None,
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn tool_call_content_is_omitted_by_default() -> Result<()> {
+        let client = test_client("https://api.openai.com/v1", 4096, None);
+        let body = serde_json::to_value(client.prepare_request(tool_call_request(None))?)?;
+        assert!(body["messages"][0].get("content").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn tool_call_content_is_filled_when_enabled() -> Result<()> {
+        let client =
+            test_client("https://api.openai.com/v1", 4096, None).with_empty_tool_call_content(true);
+        let body = serde_json::to_value(client.prepare_request(tool_call_request(None))?)?;
+        assert_eq!(body["messages"][0]["content"], "");
+        // A message without tool calls keeps its missing content.
+        assert!(body["messages"][1].get("content").is_none());
+
+        let body =
+            serde_json::to_value(client.prepare_request(tool_call_request(Some("Reading.")))?)?;
+        assert_eq!(body["messages"][0]["content"], "Reading.");
+        Ok(())
     }
 
     #[test]

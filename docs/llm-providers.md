@@ -593,6 +593,13 @@ request. OpenRouter's structured `reasoning_details` are not read, so
 encrypted reasoning from OpenAI and Gemini models routed through it is
 lost between turns.
 
+Assistant messages that only carry tool calls are sent without a
+`content` field, as the OpenAI API allows. Some compatible endpoints
+reject them, and some chat templates (GLM models served by vLLM, for
+example) render the missing field as a literal `None` in the prompt. Set
+`send_empty_tool_call_content = true` under `[ai.openai_compat]` to send
+an empty string instead.
+
 **Gateways that require extra request fields:**
 
 Enterprise gateways in front of an OpenAI-compatible endpoint often

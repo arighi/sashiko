@@ -535,6 +535,12 @@ pub struct OpenAiCompatSettings {
     /// itself are rejected rather than overridden.
     #[serde(default)]
     pub extra_body: serde_json::Map<String, serde_json::Value>,
+    /// Send an empty content string on assistant messages that carry
+    /// only tool calls instead of omitting the field. Some strict
+    /// endpoints reject such messages, and some chat templates render
+    /// the missing field as a literal None.
+    #[serde(default)]
+    pub send_empty_tool_call_content: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
