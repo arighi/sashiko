@@ -501,6 +501,13 @@ pub struct OpenAiCompatSettings {
     /// off by default.
     #[serde(default)]
     pub send_reasoning_content: bool,
+    /// HTTP headers added to every request, for gateways that
+    /// authenticate clients with a key header next to the bearer token.
+    /// Maps each header name to the environment variable holding its
+    /// value, so client credentials never sit in the settings file. A
+    /// header named here replaces the one Sashiko would send.
+    #[serde(default)]
+    pub extra_headers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

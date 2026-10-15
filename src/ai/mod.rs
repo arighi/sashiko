@@ -779,6 +779,13 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                     .as_ref()
                     .is_some_and(|c| c.send_reasoning_content),
             );
+            let provider = match ai.openai_compat.as_ref() {
+                Some(c) => provider.with_extra_headers(&openai::extra_headers_from_env(
+                    &c.extra_headers,
+                    |var| std::env::var(var).ok(),
+                )?)?,
+                None => provider,
+            };
 
             Ok(Arc::new(provider))
         }

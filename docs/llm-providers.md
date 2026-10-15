@@ -548,3 +548,28 @@ default because an endpoint that does not know the field may reject the
 request. OpenRouter's structured `reasoning_details` are not read, so
 encrypted reasoning from OpenAI and Gemini models routed through it is
 lost between turns.
+
+**Gateways that require extra request fields:**
+
+Enterprise gateways in front of an OpenAI-compatible endpoint often
+authenticate clients with a key sent in a header next to the bearer
+token, such as `x-api-key`. AI providers behind AWS are a common example.
+That key differs from the endpoint's `LLM_API_KEY`, so it needs a variable
+with a different name. Header values are credentials or auth keys, so they
+are read from the environment rather than from settings.
+Name each header and the variable under `[ai.openai_compat.extra_headers]`.
+The headers are sent with every request and an unset variable
+fails at startup.
+
+```toml
+[ai.openai_compat]
+base_url = "https://llm-gateway.example.com/v1"
+
+[ai.openai_compat.extra_headers]
+"x-api-key" = "LLM_CLIENT_API_KEY"
+```
+
+```bash
+export LLM_CLIENT_API_KEY=...
+```
+

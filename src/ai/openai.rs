@@ -223,6 +223,7 @@ pub struct OpenAiCompatClient {
     effort: Option<String>,
     send_reasoning_content: bool,
     client: Client,
+    extra_headers: reqwest::header::HeaderMap,
     temperature_unsupported: AtomicBool,
 }
 
@@ -265,6 +266,7 @@ impl OpenAiCompatClient {
             effort,
             send_reasoning_content: false,
             client,
+            extra_headers: reqwest::header::HeaderMap::new(),
             temperature_unsupported: AtomicBool::new(false),
         })
     }
@@ -273,6 +275,29 @@ impl OpenAiCompatClient {
     pub fn with_reasoning_content(mut self, send: bool) -> Self {
         self.send_reasoning_content = send;
         self
+    }
+
+    pub fn with_extra_headers(
+        mut self,
+        headers: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self> {
+        use reqwest::header::{HeaderName, HeaderValue};
+
+        for (name, value) in headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|e| anyhow::anyhow!("invalid extra header name {name:?}: {e}"))?;
+            let mut header_value = HeaderValue::from_str(value)
+                .map_err(|e| anyhow::anyhow!("invalid value for extra header {name:?}: {e}"))?;
+            header_value.set_sensitive(true);
+            // Header names are case-insensitive, so two configured keys
+            // differing only in case would collapse into one and drop a
+            // credential without a word.
+            if self.extra_headers.contains_key(&header_name) {
+                anyhow::bail!("extra header {name:?} is configured more than once");
+            }
+            self.extra_headers.insert(header_name, header_value);
+        }
+        Ok(self)
     }
 
     fn prepare_request(&self, request: AiRequest) -> Result<OpenAiRequest> {
@@ -358,7 +383,14 @@ impl OpenAiCompatClient {
     async fn post_request(&self, body: &Value) -> Result<OpenAiResponse, OpenAiCompatError> {
         let re = Regex::new(r"Please retry in ([0-9.]+)s").unwrap();
 
-        let res = match self.client.post(&self.base_url).json(body).send().await {
+        // Request headers replace default headers of the same name,
+        // so an extra authorization header overrides the bearer token.
+        let request = self
+            .client
+            .post(&self.base_url)
+            .headers(self.extra_headers.clone())
+            .json(body);
+        let res = match request.send().await {
             Ok(res) => res,
             Err(e) => {
                 let err_str = redact_secret(&e.to_string());
@@ -433,6 +465,21 @@ impl OpenAiCompatClient {
             _ => Err(OpenAiCompatError::ApiError(status, error_text))?,
         }
     }
+}
+
+pub fn extra_headers_from_env(
+    vars_by_header: &std::collections::BTreeMap<String, String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    vars_by_header
+        .iter()
+        .map(|(header, var)| match lookup(var) {
+            Some(value) if !value.is_empty() => Ok((header.clone(), value)),
+            _ => Err(anyhow::anyhow!(
+                "extra header {header:?} reads environment variable {var}, which is unset or empty"
+            )),
+        })
+        .collect()
 }
 
 fn translate_ai_request(
@@ -697,8 +744,15 @@ impl AiProvider for OpenAiCompatClient {
         // Sending reasoning back needs every cached reply to carry its
         // thought, which replies cached before thoughts were read lack. The
         // setting enters the identity only when on, so other entries stay
-        // valid.
+        // valid. Extra headers enter by name only: their values are
+        // credentials that must stay out of the cache file, and a header
+        // whose value steers the reply is not supported.
         let max_tokens = self.max_tokens.to_string();
+        let extra_headers = (!self.extra_headers.is_empty()).then(|| {
+            let mut names: Vec<&str> = self.extra_headers.keys().map(|n| n.as_str()).collect();
+            names.sort_unstable();
+            names.join(",")
+        });
         let provider_type = match self.provider_type {
             OpenAiProviderType::OpenAi => "openai",
             OpenAiProviderType::OpenAiCompatible => "openai-compatible",
@@ -714,6 +768,7 @@ impl AiProvider for OpenAiCompatClient {
                     "send_reasoning_content",
                     self.send_reasoning_content.then_some("true"),
                 ),
+                ("extra_headers", extra_headers.as_deref()),
             ],
         )
     }
@@ -1602,6 +1657,22 @@ mod tests {
     }
 
     #[test]
+    fn cache_identity_tracks_extra_header_names_not_values() -> Result<()> {
+        let headers = |value: &str| {
+            std::collections::BTreeMap::from([("x-api-key".to_string(), value.to_string())])
+        };
+        let plain = test_client("https://api.openai.com/v1", 4096, None);
+        let first = test_client("https://api.openai.com/v1", 4096, None)
+            .with_extra_headers(&headers("secret-one"))?;
+        let rotated = test_client("https://api.openai.com/v1", 4096, None)
+            .with_extra_headers(&headers("secret-two"))?;
+        assert_ne!(plain.cache_identity(), first.cache_identity());
+        assert_eq!(first.cache_identity(), rotated.cache_identity());
+        assert!(!first.cache_identity().contains("secret"));
+        Ok(())
+    }
+
+    #[test]
     fn cache_identity_tracks_send_reasoning_content() {
         let off = test_client("https://api.openai.com/v1", 4096, None);
         let on = test_client("https://api.openai.com/v1", 4096, None).with_reasoning_content(true);
@@ -1642,6 +1713,139 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             "Unsupported parameter: 'temperature'"
         )));
+    }
+
+    /// Requests captured by a stub chat completions server.
+    #[cfg(feature = "server")]
+    type CapturedRequests = std::sync::Arc<tokio::sync::Mutex<Vec<(axum::http::HeaderMap, Value)>>>;
+
+    /// Starts a stub chat completions server that records every request
+    /// and answers it with a fixed reply. Returns the base URL to point a
+    /// client at, the captured requests, and the server task.
+    #[cfg(feature = "server")]
+    async fn capturing_server() -> Result<(String, CapturedRequests, tokio::task::JoinHandle<()>)> {
+        use axum::{Json, Router, http::HeaderMap, routing::post};
+
+        let captured = CapturedRequests::default();
+        let seen = std::sync::Arc::clone(&captured);
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let seen = std::sync::Arc::clone(&seen);
+                async move {
+                    seen.lock().await.push((headers, body));
+                    Json(json!({"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base_url = format!("http://{}/v1", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok((base_url, captured, server))
+    }
+
+    #[cfg(feature = "server")]
+    fn empty_request() -> AiRequest {
+        AiRequest {
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            response_format: None,
+            context_tag: None,
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn extra_headers_reject_invalid_names_and_values() {
+        let headers = |name: &str, value: &str| {
+            std::collections::BTreeMap::from([(name.to_string(), value.to_string())])
+        };
+        let client = || test_client("https://api.openai.com/v1", 4096, None);
+
+        assert!(
+            client()
+                .with_extra_headers(&headers("x-api-key", "abc"))
+                .is_ok()
+        );
+        assert!(
+            client()
+                .with_extra_headers(&headers("bad header", "abc"))
+                .is_err()
+        );
+        assert!(
+            client()
+                .with_extra_headers(&headers("x-api-key", "a\nb"))
+                .is_err()
+        );
+        let duplicated = std::collections::BTreeMap::from([
+            ("X-Api-Key".to_string(), "a".to_string()),
+            ("x-api-key".to_string(), "b".to_string()),
+        ]);
+        assert!(client().with_extra_headers(&duplicated).is_err());
+    }
+
+    #[test]
+    fn extra_headers_read_their_values_from_the_environment() -> Result<()> {
+        let vars_by_header = std::collections::BTreeMap::from([(
+            "x-api-key".to_string(),
+            "CLIENT_API_KEY".to_string(),
+        )]);
+        let env = |value: Option<&str>| {
+            let value = value.map(str::to_string);
+            move |var: &str| (var == "CLIENT_API_KEY").then(|| value.clone()).flatten()
+        };
+
+        let headers = extra_headers_from_env(&vars_by_header, env(Some("client-key")))?;
+        assert_eq!(headers["x-api-key"], "client-key");
+
+        for missing in [None, Some("")] {
+            let error = extra_headers_from_env(&vars_by_header, env(missing))
+                .expect_err("an unset or empty variable must fail")
+                .to_string();
+            assert!(error.contains("CLIENT_API_KEY"), "{error}");
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn extra_headers_are_sent_and_override_defaults() -> Result<()> {
+        let (base_url, captured, server) = capturing_server().await?;
+        let headers = std::collections::BTreeMap::from([
+            ("x-api-key".to_string(), "client-key".to_string()),
+            ("Authorization".to_string(), "Gateway token".to_string()),
+        ]);
+        let mut client = OpenAiCompatClient::new(
+            base_url,
+            OpenAiProviderType::OpenAiCompatible,
+            "test-model".to_string(),
+            8192,
+            128,
+            5,
+            None,
+        )?
+        .with_extra_headers(&headers)?;
+        // Stands in for the bearer token new() sets from the environment.
+        client.client = reqwest::Client::builder()
+            .default_headers(reqwest::header::HeaderMap::from_iter([(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_static("Bearer default"),
+            )]))
+            .build()?;
+
+        client.generate_content(empty_request()).await?;
+
+        let requests = captured.lock().await;
+        let (headers, _) = &requests[0];
+        assert_eq!(headers["x-api-key"], "client-key");
+        assert_eq!(headers["authorization"], "Gateway token");
+        assert_eq!(headers.get_all("authorization").iter().count(), 1);
+        server.abort();
+        Ok(())
     }
 
     #[cfg(feature = "server")]
