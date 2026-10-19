@@ -14,6 +14,7 @@
 
 //! Policies governing stage limits, tool availability, retries, and errors.
 
+use crate::ai::ModelRole;
 pub use crate::ai::ReasoningEffort;
 
 /// Defines which tools are exposed to the LLM during a stage.
@@ -52,6 +53,8 @@ pub enum RecitationPolicy {
 /// Execution policies, limits, and retry configuration for a stage.
 #[derive(Clone, Debug)]
 pub struct StagePolicy {
+    /// Provider selected for this stage.
+    pub model_role: ModelRole,
     /// Maximum conversational turns allowed for this stage.
     pub max_turns: usize,
     /// Maximum validation retries on invalid output format.
@@ -69,6 +72,7 @@ pub struct StagePolicy {
 impl Default for StagePolicy {
     fn default() -> Self {
         Self {
+            model_role: ModelRole::Main,
             max_turns: 15,
             max_validation_attempts: 3,
             temperature: 0.0,

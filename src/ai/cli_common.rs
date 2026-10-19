@@ -746,6 +746,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         }
     }
 

@@ -76,6 +76,13 @@ temperature = 1.0
 # max_rps = 1.0
 # max_tpm = 1000000
 
+# [ai.validation]  # Optional provider for verification and post-verification
+# provider = "openai-compatible"
+# model = "validation-model"
+# [ai.validation.openai_compat]
+# base_url = "https://validation.example/v1"
+# api_key_env = "VALIDATION_API_KEY"
+
 [server]
 host = "::"
 port = 8080

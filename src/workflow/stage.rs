@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::ai::{
     AiMessage, AiProvider, AiResponse, AiResponseFormat, AiTool, ErrorAction, LlmSession,
-    ReasoningEffort, SessionRunner, ToolCall, ValidationError,
+    ModelRole, ReasoningEffort, SessionRunner, ToolCall, ValidationError,
 };
 use crate::toolbox::ToolBox;
 
@@ -380,6 +380,10 @@ impl<'a, S: Send + Sync + 'static, T: DeserializeOwned + Send + 'static> LlmSess
 
     fn context_tag(&self) -> Option<String> {
         self.context_tag.clone()
+    }
+
+    fn model_role(&self) -> ModelRole {
+        self.stage.policy.model_role
     }
 
     fn response_format(&self) -> Option<AiResponseFormat> {

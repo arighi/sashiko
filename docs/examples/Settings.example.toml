@@ -7,6 +7,14 @@ provider = "gemini"
 model = "gemini-4-argon"
 max_input_tokens = 900000
 
+# Optional second provider for verification and parallel post-verification:
+# [ai.validation]
+# provider = "openai-compatible"
+# model = "validation-model"
+# [ai.validation.openai_compat]
+# base_url = "https://validation.example/v1"
+# api_key_env = "VALIDATION_API_KEY"
+
 [review]
 # Reviews run concurrently up to this many patches. Sized for one developer's
 # machine; the daemon's own Settings.toml uses a much larger fan-out.

@@ -123,6 +123,10 @@ impl CachingAiProvider {
             {
                 *system = PROMPT_DATE.replace(text, "<date>").into();
             }
+            // Routing is reflected by the selected provider's cache identity.
+            // Excluding the role keeps old verification entries reusable when
+            // no second provider is configured.
+            map.remove("model_role");
         }
         super::scrub_thought_signatures(&mut val);
         let canonical = serde_json::to_string(&val).unwrap_or_default();
@@ -773,5 +777,45 @@ mod tests {
             patch("Monday, October 26, 2026"),
             patch("Tuesday, October 27, 2026")
         );
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use crate::ai::ModelRole;
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    struct StubProvider;
+
+    #[async_trait]
+    impl AiProvider for StubProvider {
+        async fn generate_content(&self, _request: AiRequest) -> Result<AiResponse> {
+            unreachable!()
+        }
+
+        fn get_capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                model_name: "stub".to_string(),
+                context_window_size: 1024,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn role_does_not_invalidate_existing_cache_entries() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let cache = CachingAiProvider::new(
+            Arc::new(StubProvider),
+            &temp.path().join("responses.db").to_string_lossy(),
+            7,
+        )
+        .await?;
+        let mut request: AiRequest = serde_json::from_value(json!({"messages": []}))?;
+        let main_key = cache.compute_cache_key(&request);
+        request.model_role = ModelRole::Validation;
+        assert_eq!(cache.compute_cache_key(&request), main_key);
+        Ok(())
     }
 }

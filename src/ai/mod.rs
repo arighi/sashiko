@@ -22,6 +22,17 @@ use std::time::Duration;
 
 use crate::settings::{AiSettings, Settings};
 
+pub mod routed_provider;
+
+/// Selects which configured provider handles a review-stage request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRole {
+    #[default]
+    Main,
+    Validation,
+}
+
 /// Represents the role of a message in an AI conversation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -267,6 +278,13 @@ pub struct AiRequest {
     /// Optional per-request reasoning / thinking effort override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Provider role. Missing values from older workers use the main model.
+    #[serde(default, skip_serializing_if = "is_main_model_role")]
+    pub model_role: ModelRole,
+}
+
+fn is_main_model_role(role: &ModelRole) -> bool {
+    *role == ModelRole::Main
 }
 
 tokio::task_local! {
@@ -658,6 +676,30 @@ pub async fn create_provider_cached(
     }
 }
 
+/// Builds the providers used by patch review. An absent validation config
+/// preserves the existing single-provider behavior.
+pub async fn create_review_provider_cached(
+    ai: &AiSettings,
+    database: Option<&str>,
+) -> Result<Arc<dyn AiProvider>> {
+    let main = create_provider_cached(ai, database).await?;
+    // A daemon-spawned worker forwards the role to the daemon, which owns
+    // both endpoint credentials and routes the request there.
+    if ai.provider.starts_with("stdio-") {
+        return Ok(main);
+    }
+    let Some(validation_settings) = ai.validation.as_deref() else {
+        return Ok(main);
+    };
+    if validation_settings.validation.is_some() {
+        bail!("nested AI validation settings are not supported");
+    }
+    let validation = create_provider_cached(validation_settings, database).await?;
+    Ok(Arc::new(routed_provider::RoutedProvider::new(
+        main, validation,
+    )))
+}
+
 /// Creates an AI provider based on the application settings.
 pub fn create_provider(settings: &Settings) -> Result<Arc<dyn AiProvider>> {
     create_provider_from_ai(&settings.ai)
@@ -804,7 +846,24 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                 .as_ref()
                 .is_some_and(|c| c.send_empty_tool_call_content);
 
-            let provider = openai::OpenAiCompatClient::new(
+            let api_key = ai
+                .openai_compat
+                .as_ref()
+                .and_then(|c| c.api_key_env.as_deref())
+                .map(|name| {
+                    if name.is_empty() {
+                        bail!("OpenAI API key environment variable name is empty");
+                    }
+                    let key = std::env::var(name)
+                        .map_err(|_| anyhow::anyhow!("OpenAI API key variable {name} is unset"))?;
+                    if key.is_empty() {
+                        bail!("OpenAI API key variable {name} is empty");
+                    }
+                    Ok(key)
+                })
+                .transpose()?;
+
+            let provider = openai::OpenAiCompatClient::new_with_api_key(
                 base_url,
                 provider_type,
                 ai.model.clone(),
@@ -812,6 +871,7 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                 max_tokens,
                 ai.api_timeout_secs,
                 effort,
+                api_key,
             )?
             .with_reasoning_content(
                 ai.openai_compat
@@ -1424,6 +1484,7 @@ mod tests {
             response_format: Some(AiResponseFormat::Text),
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         // This matches the format used in StdioGeminiClient and expected by the Worker
@@ -1645,6 +1706,21 @@ mod tests {
         let result = create_provider(&settings);
         assert!(result.is_err());
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stdio_worker_does_not_construct_the_daemons_validation_provider() -> Result<()> {
+        let mut settings = Settings::new()?;
+        settings.ai.provider = "stdio-gemini".to_string();
+        settings.ai.response_cache = false;
+        let mut validation = settings.ai.clone();
+        validation.provider = "invalid-provider".to_string();
+        validation.validation = None;
+        settings.ai.validation = Some(Box::new(validation));
+
+        let provider = create_review_provider_cached(&settings.ai, None).await?;
+        assert_eq!(provider.get_capabilities().model_name, "stdio-gemini");
         Ok(())
     }
 

@@ -144,6 +144,7 @@ Core AI settings that apply to all providers.
 |-----|------|---------|-------------|
 | `provider` | string | -- | LLM provider: `gemini`, `claude`, `claude-cli`, `codex-cli`, `copilot-cli`, `devin-cli`, `kiro-cli`, `goose` (alias `goose-cli`), `openai`, `openai-compatible`, `ollama`, `vllm`, `bedrock`, `vertex`. `bedrock` and `vertex` need a build with `--features bedrock` / `--features vertex`; without it their `[ai.bedrock]` / `[ai.vertex]` table is rejected as an unknown field. |
 | `model` | string | -- | Model identifier (provider-specific). |
+| `validation` | table | -- | Optional second AI provider used by patch-review verification and parallel post-verification. Supply its own `provider` and `model`; other provider-specific settings are independent of the main provider. Without it, those stages use the main provider. |
 | `max_input_tokens` | integer | `150000` | Maximum input tokens per request. |
 | `max_interactions` | integer | `100` | Maximum tool-call rounds per review turn. |
 | `temperature` | float | `1.0` | Sampling temperature. |
@@ -202,6 +203,7 @@ Settings for the OpenAI providers (`provider = "openai"` or `provider = "openai-
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `base_url` | string | model-derived | API endpoint URL. Derived from the model name, `https://api.openai.com/v1/chat/completions` for anything unrecognized. |
+| `api_key_env` | string | -- | Name of the environment variable holding this endpoint's API key. If absent, use `OPENAI_API_KEY`, then `LLM_API_KEY`. The named variable must be set and nonempty. |
 | `context_window_size` | integer | model-derived | Context window size. `128000` for most models. |
 | `max_tokens` | integer | `4096` | Max output tokens per response. With `provider = "openai"` it is sent as `max_completion_tokens`, which bounds reasoning tokens as well as the reply. |
 | `effort` | string | -- | Reasoning effort, sent as the `reasoning_effort` request field and omitted entirely when unset. The valid set belongs to the model rather than to the API: `"none"` is legal, and is what a gpt-5.6 chat completion carrying function tools requires, while gpt-5.4-pro takes only `"medium"` and `"high"`. A level the model rejects comes back as a 400, which is fatal. Applies to both `provider = "openai"` and `provider = "openai-compatible"`; a compatible endpoint that does not implement the field may reject the request, so leave it unset there. |
@@ -278,6 +280,37 @@ a build with `--features vertex`. A `claude-` model uses Anthropic's API, a
 | `max_tokens` | integer | model-derived | Max output tokens. Claude: `8192`. Gemini: `[ai.gemini] max_tokens`, else the Gemini default above. |
 | `thinking` | string | -- | Claude: `"adaptive"`, or `"disabled"` where the model allows it. Gemini: fallback thinking level (`"LOW"`, `"MEDIUM"`, `"HIGH"`), defaulting to `[ai.gemini] thinking_level`. |
 | `effort` | string | -- | Claude: `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Gemini: thinking level, taking precedence over `thinking`. |
+
+#### `[ai.validation]`
+
+The optional validation provider has the same keys as `[ai]` and is used for
+verification and parallel post-verification in Linux and Sashiko patch reviews. It
+can use a different model, endpoint, and credential. The worker sends its
+model choice to the daemon, so the daemon holds both credentials. Other review
+stages use the main `[ai]` provider.
+
+| Provider | Patch-review stages |
+|----------|---------------------|
+| Main `[ai]` | Pre-screen, planning, goal, implementation, execution flow, optional specialist analysis, report, and the Sashiko change summary. |
+| `[ai.validation]` | Verification and parallel post-verification. |
+
+```toml
+[ai]
+provider = "openai-compatible"
+model = "discovery-model"
+
+[ai.openai_compat]
+base_url = "https://discovery.example/v1"
+api_key_env = "DISCOVERY_API_KEY"
+
+[ai.validation]
+provider = "openai-compatible"
+model = "validation-model"
+
+[ai.validation.openai_compat]
+base_url = "https://validation.example/v1"
+api_key_env = "VALIDATION_API_KEY"
+```
 
 #### `[ai.kiro_cli]`
 

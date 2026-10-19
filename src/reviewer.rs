@@ -15,7 +15,7 @@
 use crate::ReviewStatus;
 use crate::ai::quota::QuotaManager;
 use crate::ai::{
-    AiProvider, AiRequest, RemoteAiErrorPayload, classify_ai_error, create_provider_cached,
+    AiProvider, AiRequest, RemoteAiErrorPayload, classify_ai_error, create_review_provider_cached,
 };
 use crate::baseline::{BaselineRegistry, BaselineResolution, CommitId, extract_files_from_diff};
 use crate::db::{AiInteractionParams, Database, Finding, PatchsetRow, Severity};
@@ -152,9 +152,10 @@ impl Reviewer {
                 }
             };
 
-        let provider = create_provider_cached(&settings.ai, Some(settings.database.url.as_str()))
-            .await
-            .expect("Failed to create AI provider");
+        let provider =
+            create_review_provider_cached(&settings.ai, Some(settings.database.url.as_str()))
+                .await
+                .expect("Failed to create AI provider");
 
         let llm_concurrency = crate::ai::concurrency_limited_provider::llm_permits(concurrency);
         let quota_manager = Arc::new(QuotaManager::with_limits(
@@ -4566,6 +4567,7 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
                                 response_format: None,
                                 context_tag: None,
                                 reasoning_effort: None,
+                                model_role: Default::default(),
                             })
                             .await?;
 
@@ -4638,6 +4640,7 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
         let line = serde_json::to_string(&crate::ai::forget_envelope(&request))?;
         let mock_script = format!(

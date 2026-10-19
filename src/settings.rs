@@ -502,6 +502,9 @@ pub struct VertexSettings {
 pub struct OpenAiCompatSettings {
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Environment variable containing the API key for this endpoint.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     #[serde(default)]
     pub context_window_size: Option<usize>,
     #[serde(default)]
@@ -684,6 +687,9 @@ pub struct DevinCliSettings {
 pub struct AiSettings {
     pub provider: String,
     pub model: String,
+    /// Optional second provider for patch-review verification and post-verification.
+    #[serde(default)]
+    pub validation: Option<Box<AiSettings>>,
     #[serde(default = "default_max_input_tokens")]
     pub max_input_tokens: usize,
     #[serde(default = "default_max_interactions")]
@@ -1904,6 +1910,43 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{label} names no usable provider: {e}"));
         }
         true
+    }
+
+    #[test]
+    fn test_validation_provider_has_independent_endpoint_settings() {
+        let settings: Settings = toml::from_str(
+            r#"
+            [ai]
+            provider = "openai-compatible"
+            model = "discovery"
+            [ai.openai_compat]
+            base_url = "https://discovery.example/v1"
+            api_key_env = "DISCOVERY_KEY"
+            [ai.validation]
+            provider = "openai-compatible"
+            model = "verification"
+            [ai.validation.openai_compat]
+            base_url = "https://validation.example/v1"
+            api_key_env = "VALIDATION_KEY"
+            [review]
+            concurrency = 2
+            "#,
+        )
+        .unwrap();
+
+        let validation = settings.ai.validation.unwrap();
+        assert_eq!(settings.ai.model, "discovery");
+        assert_eq!(validation.model, "verification");
+        assert_eq!(
+            settings.ai.openai_compat.unwrap().api_key_env.as_deref(),
+            Some("DISCOVERY_KEY")
+        );
+        let endpoint = validation.openai_compat.unwrap();
+        assert_eq!(
+            endpoint.base_url.as_deref(),
+            Some("https://validation.example/v1")
+        );
+        assert_eq!(endpoint.api_key_env.as_deref(), Some("VALIDATION_KEY"));
     }
 
     #[test]

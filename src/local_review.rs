@@ -565,7 +565,7 @@ async fn review_single_patch(
         }
 
         // No database, so the cache goes where the prompt bundle already lives.
-        let provider = crate::ai::create_provider_cached(ai, None)
+        let provider = crate::ai::create_review_provider_cached(ai, None)
             .await
             .context("Failed to create AI provider")?;
         let provider = decorate_provider(provider, ai, llm_semaphore, quota, &retry_budget);
@@ -1683,6 +1683,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         }
     }
 

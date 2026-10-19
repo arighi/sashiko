@@ -2407,6 +2407,7 @@ Example Output:
                 .with_feedback_formatter(format_verification_stage_feedback),
         )
         .policy(StagePolicy {
+            model_role: crate::ai::ModelRole::Validation,
             tools: ToolScope::All,
             max_turns,
             temperature,
@@ -2526,6 +2527,7 @@ Example Output:
                 .with_feedback_formatter(format_post_verification_feedback),
         )
         .policy(StagePolicy {
+            model_role: crate::ai::ModelRole::Validation,
             tools: ToolScope::All,
             max_turns,
             temperature,
@@ -2680,6 +2682,24 @@ pub fn build_linux_patch_review_workflow_with_effort(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concern_decisions_select_validation_model() {
+        assert_eq!(
+            post_verification_stage("post-verification-1", vec![], 1, 0.0)
+                .policy
+                .model_role,
+            crate::ai::ModelRole::Validation
+        );
+        assert_eq!(
+            verification_stage(1, 0.0).policy.model_role,
+            crate::ai::ModelRole::Validation
+        );
+        assert_eq!(
+            report_stage(1, 0.0).policy.model_role,
+            crate::ai::ModelRole::Main
+        );
+    }
 
     #[test]
     fn test_each_stage_declares_whether_it_needs_the_commit_message() {

@@ -241,6 +241,7 @@ pub struct OpenAiCompatClient {
     extra_body: serde_json::Map<String, Value>,
     temperature_unsupported: AtomicBool,
     send_empty_tool_call_content: bool,
+    api_key_fingerprint: Option<String>,
 }
 
 impl OpenAiCompatClient {
@@ -253,15 +254,46 @@ impl OpenAiCompatClient {
         api_timeout_secs: u64,
         effort: Option<String>,
     ) -> Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .or_else(|_| std::env::var("LLM_API_KEY"))
-            .unwrap_or_default();
+        Self::new_with_api_key(
+            base_url,
+            provider_type,
+            model,
+            context_window_size,
+            max_tokens,
+            api_timeout_secs,
+            effort,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_api_key(
+        base_url: String,
+        provider_type: OpenAiProviderType,
+        model: String,
+        context_window_size: usize,
+        max_tokens: u32,
+        api_timeout_secs: u64,
+        effort: Option<String>,
+        explicit_api_key: Option<String>,
+    ) -> Result<Self> {
+        let api_key_fingerprint = explicit_api_key.as_ref().map(|key| {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(key.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        });
+        let api_key = explicit_api_key.unwrap_or_else(|| {
+            std::env::var("OPENAI_API_KEY")
+                .or_else(|_| std::env::var("LLM_API_KEY"))
+                .unwrap_or_default()
+        });
 
         let mut headers = reqwest::header::HeaderMap::new();
-        if !api_key.is_empty()
-            && let Ok(value) =
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-        {
+        if !api_key.is_empty() {
+            let value = reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
+                .map_err(|_| anyhow::anyhow!("Invalid OpenAI API key header"))?;
             headers.insert("Authorization", value);
         }
 
@@ -286,6 +318,7 @@ impl OpenAiCompatClient {
             extra_body: serde_json::Map::new(),
             temperature_unsupported: AtomicBool::new(false),
             send_empty_tool_call_content: false,
+            api_key_fingerprint,
         })
     }
 
@@ -855,6 +888,7 @@ impl AiProvider for OpenAiCompatClient {
                     "empty_tool_call_content",
                     self.send_empty_tool_call_content.then_some("true"),
                 ),
+                ("api_key_fingerprint", self.api_key_fingerprint.as_deref()),
             ],
         )
     }
@@ -925,6 +959,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -971,6 +1006,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1009,6 +1045,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1051,6 +1088,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let translate = |thought, send| {
@@ -1133,6 +1171,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1171,6 +1210,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1195,6 +1235,7 @@ mod tests {
                 response_format: None,
                 context_tag: None,
                 reasoning_effort: None,
+                model_role: Default::default(),
             },
             4096,
             OpenAiProviderType::OpenAiCompatible,
@@ -1249,6 +1290,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1287,6 +1329,7 @@ mod tests {
             }),
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1323,6 +1366,7 @@ mod tests {
             response_format: Some(AiResponseFormat::Json { schema: None }),
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let openai_req =
@@ -1362,6 +1406,7 @@ mod tests {
                     response_format: Some(AiResponseFormat::Json { schema: None }),
                     context_tag: None,
                     reasoning_effort: None,
+                    model_role: Default::default(),
                 },
                 4096,
                 OpenAiProviderType::OpenAiCompatible,
@@ -1392,6 +1437,7 @@ mod tests {
             response_format: Some(AiResponseFormat::Json { schema: None }),
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let translated =
@@ -1609,6 +1655,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         let compat_req =
@@ -1804,6 +1851,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         }
     }
 
@@ -1837,6 +1885,60 @@ mod tests {
             client.cache_identity(),
             "gpt-5.1|max_tokens=4096|base_url=https://api.openai.com/v1/chat/completions|provider_type=openai"
         );
+    }
+
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn explicit_api_keys_set_separate_authorization_and_cache_identities() -> Result<()> {
+        use axum::{Json, Router, http::HeaderMap, routing::post};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |headers: HeaderMap| {
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    recorded.lock().await.push(
+                        headers[reqwest::header::AUTHORIZATION]
+                            .to_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                    Json(json!({"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base_url = format!("http://{}/v1", listener.local_addr()?);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let make = |key: &str| {
+            OpenAiCompatClient::new_with_api_key(
+                base_url.clone(),
+                OpenAiProviderType::OpenAiCompatible,
+                "shared-model".to_string(),
+                32768,
+                4096,
+                60,
+                None,
+                Some(key.to_string()),
+            )
+            .unwrap()
+        };
+        let main = make("main-secret");
+        let validation = make("validation-secret");
+        main.post_request(&json!({"messages": []})).await?;
+        validation.post_request(&json!({"messages": []})).await?;
+        assert_eq!(
+            *seen.lock().await,
+            ["Bearer main-secret", "Bearer validation-secret"]
+        );
+        assert_ne!(main.cache_identity(), validation.cache_identity());
+        assert!(!main.cache_identity().contains("main-secret"));
+        server.abort();
+        Ok(())
     }
 
     #[test]
@@ -1907,6 +2009,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         }
     }
 
@@ -2137,6 +2240,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         };
 
         client.generate_content(request.clone()).await?;
@@ -2194,6 +2298,7 @@ mod tests {
                 response_format: None,
                 context_tag: None,
                 reasoning_effort: None,
+                model_role: Default::default(),
             };
 
             assert!(client.generate_content(request).await.is_err());
@@ -2233,6 +2338,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            model_role: Default::default(),
         }
     }
 

@@ -108,6 +108,11 @@ pub trait LlmSession: Send {
         None
     }
 
+    /// Provider role selected by the workflow stage.
+    fn model_role(&self) -> crate::ai::ModelRole {
+        crate::ai::ModelRole::Main
+    }
+
     /// Optional expected response format.
     fn response_format(&self) -> Option<AiResponseFormat> {
         None
@@ -336,6 +341,7 @@ impl<'a> SessionRunner<'a> {
                 response_format: session.response_format(),
                 context_tag: session.context_tag(),
                 reasoning_effort: session.reasoning_effort(),
+                model_role: session.model_role(),
             };
 
             // Kept so that a rejected answer can be forgotten below.
