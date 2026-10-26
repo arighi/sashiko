@@ -255,12 +255,13 @@ models use the Converse API.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `region` | string | AWS SDK default chain | AWS region, e.g. `"us-east-1"`. |
-| `prompt_caching` | bool | `true` | Anthropic prompt caching on the Converse API; set `false` for non-Anthropic models there. |
+| `prompt_caching` | bool | `true` | Anthropic prompt caching on the Converse API; set `false` for non-Anthropic models there. On bedrock-mantle it sends `prompt_cache_options` with breakpoints on the system prompt and last user message. |
 | `max_tokens` | integer | `8192` | Max output tokens per call. On bedrock-mantle this is `max_output_tokens`, which includes reasoning tokens, so raise it for high effort levels. |
 | `thinking` | string | -- | `"adaptive"` for Anthropic models; unset disables thinking. Ignored on bedrock-mantle. |
 | `effort` | string | -- | `"low"`, `"medium"`, `"high"`, `"xhigh"` (Opus 4.7 only), `"max"`. Sent as `output_config.effort`, or as `reasoning.effort` for model IDs containing `openai.`. |
 | `openai_api` | string | `"mantle"` | API for OpenAI foundation model IDs (`openai.*`): `"mantle"` sends them to the OpenAI Responses API on bedrock-mantle, `"converse"` keeps them on the Converse API. Inference profile IDs (`global.openai.*`) and ARNs always use Converse. |
 | `mantle_base_url` | string | `https://bedrock-mantle.<region>.api.aws/v1` | bedrock-mantle API root, ending in `/v1` or `/responses`. Needed for models served under `/openai/v1`. A region in the URL also selects the signing region. |
+| `prompt_cache_ttl` | string | -- | bedrock-mantle prompt cache TTL, sent as `prompt_cache_options.ttl` (e.g. `"30m"`). Unset uses the service default. |
 
 #### `[ai.vertex]`
 

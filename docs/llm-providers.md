@@ -230,6 +230,16 @@ cp docs/examples/Settings.gpt-bedrock.toml Settings.toml
 - **Output limit:** `max_tokens` becomes `max_output_tokens`, which includes
   hidden reasoning tokens. Raise it well above the default `8192` for high
   effort levels, or answers come back truncated.
+- **Prompt caching:** with `prompt_caching = true` (the default) requests
+  carry `prompt_cache_options` in `implicit` mode, plus explicit breakpoints
+  on the system prompt and the last user message. Implicit mode lets Bedrock
+  add an automatic breakpoint on the latest message, which covers the
+  growing tool-call history; Bedrock allows four cache writes per request
+  and Sashiko places at most two. `prompt_cache_ttl` (e.g. `"30m"`) sets the
+  TTL. Cache writes are billed above the input rate and reads below it;
+  `RUST_LOG=sashiko::ai::bedrock_mantle=info` logs `cache_read` and
+  `cache_write` per response. Set `prompt_caching = false` for a model that
+  rejects `prompt_cache_options`.
 
 Set `openai_api = "converse"` under `[ai.bedrock]` to keep OpenAI
 foundation models on the Converse API, where inference profile IDs always

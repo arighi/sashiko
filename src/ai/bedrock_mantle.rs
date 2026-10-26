@@ -58,6 +58,8 @@ struct ResponsesRequest {
     reasoning: Option<Value>,
     include: Vec<String>,
     store: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_options: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +98,8 @@ struct ResponsesUsage {
 struct InputTokensDetails {
     #[serde(default)]
     cached_tokens: Option<u32>,
+    #[serde(default)]
+    cache_write_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +126,9 @@ pub struct MantleOptions {
     pub api_timeout_secs: u64,
     /// Long-term Bedrock API key; `None` derives short-term keys instead.
     pub api_key: Option<String>,
+    /// Send prompt_cache_options and cache breakpoints.
+    pub prompt_caching: bool,
+    pub prompt_cache_ttl: Option<String>,
 }
 
 struct Endpoint {
@@ -136,6 +143,8 @@ pub struct MantleClient {
     max_tokens: u32,
     effort: Option<String>,
     api_key: Option<String>,
+    prompt_caching: bool,
+    prompt_cache_ttl: Option<String>,
     context_window_size: usize,
     endpoint: tokio::sync::OnceCell<Endpoint>,
     token: tokio::sync::Mutex<Option<BedrockToken>>,
@@ -152,6 +161,8 @@ impl MantleClient {
             effort,
             api_timeout_secs,
             api_key,
+            prompt_caching,
+            prompt_cache_ttl,
         } = options;
         if let Some(url) = &base_url {
             responses_endpoint(url)?;
@@ -175,6 +186,8 @@ impl MantleClient {
             max_tokens,
             effort,
             api_key,
+            prompt_caching,
+            prompt_cache_ttl,
             context_window_size: 128_000,
             endpoint: tokio::sync::OnceCell::new(),
             token: tokio::sync::Mutex::new(None),
@@ -282,17 +295,18 @@ impl MantleClient {
                 .into());
             }
             match &parsed.usage {
-                Some(usage) => tracing::info!(
-                    "{}bedrock-mantle response received. Tokens: in={}, out={}, cache_read={}",
-                    crate::ai::get_log_prefix(),
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    usage
-                        .input_tokens_details
-                        .as_ref()
-                        .and_then(|d| d.cached_tokens)
-                        .unwrap_or(0),
-                ),
+                Some(usage) => {
+                    let details = usage.input_tokens_details.as_ref();
+                    tracing::info!(
+                        "{}bedrock-mantle response received. Tokens: in={}, out={}, \
+                         cache_read={}, cache_write={}",
+                        crate::ai::get_log_prefix(),
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        details.and_then(|d| d.cached_tokens).unwrap_or(0),
+                        details.and_then(|d| d.cache_write_tokens).unwrap_or(0),
+                    )
+                }
                 None => tracing::info!(
                     "{}bedrock-mantle response received without usage.",
                     crate::ai::get_log_prefix()
@@ -405,6 +419,73 @@ fn sanitize_replay_items(items: impl IntoIterator<Item = Value>) -> Vec<Value> {
     };
     candidates.truncate(last + 1);
     candidates
+}
+
+/// Bedrock accepts `prompt_cache_breakpoint` only on `input_text` parts of
+/// prompt messages, so a plain string content is expanded into one part.
+fn add_cache_breakpoint(item: &mut Value) {
+    let is_prompt_message = item_type(item) == Some("message")
+        && matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("system" | "developer" | "user")
+        );
+    if !is_prompt_message {
+        return;
+    }
+    let marker = json!({"mode": "explicit"});
+    match item.get_mut("content") {
+        Some(content) if content.is_string() => {
+            let text = content.take();
+            *content = json!([{
+                "type": "input_text",
+                "text": text,
+                "prompt_cache_breakpoint": marker,
+            }]);
+        }
+        Some(Value::Array(parts)) => {
+            if let Some(part) = parts
+                .iter_mut()
+                .rev()
+                .find(|part| item_type(part) == Some("input_text"))
+            {
+                part["prompt_cache_breakpoint"] = marker;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Marks the end of the system prompt and the last user message. Implicit
+/// mode also lets Bedrock place an automatic breakpoint on the latest
+/// message, covering the growing tool-call history; Bedrock allows four
+/// cache writes per request, so two explicit ones leave room for it.
+fn apply_prompt_cache(request: &mut ResponsesRequest, ttl: Option<&str>) {
+    let mut options = json!({"mode": "implicit"});
+    if let Some(ttl) = ttl {
+        options["ttl"] = json!(ttl);
+    }
+    request.prompt_cache_options = Some(options);
+
+    let input = &mut request.input;
+    let is_system = |item: &Value| {
+        item_type(item) == Some("message")
+            && matches!(
+                item.get("role").and_then(Value::as_str),
+                Some("system" | "developer")
+            )
+    };
+    let system_end = input
+        .iter()
+        .take_while(|item| is_system(item))
+        .count()
+        .checked_sub(1);
+    let last_user = input.iter().rposition(|item| {
+        item_type(item) == Some("message")
+            && item.get("role").and_then(Value::as_str) == Some("user")
+    });
+    for index in [system_end, last_user].into_iter().flatten() {
+        add_cache_breakpoint(&mut input[index]);
+    }
 }
 
 fn encode_replay(items: Vec<Value>) -> String {
@@ -531,6 +612,7 @@ fn translate_request(
         reasoning: effort.map(|effort| json!({"effort": effort})),
         include: vec!["reasoning.encrypted_content".to_string()],
         store: false,
+        prompt_cache_options: None,
     })
 }
 
@@ -631,12 +713,15 @@ fn translate_response(response: ResponsesResponse) -> Result<AiResponse> {
 #[async_trait]
 impl AiProvider for MantleClient {
     async fn generate_content(&self, request: AiRequest) -> Result<AiResponse> {
-        let body = translate_request(
+        let mut body = translate_request(
             request,
             self.model.clone(),
             self.max_tokens,
             self.effort.clone(),
         )?;
+        if self.prompt_caching {
+            apply_prompt_cache(&mut body, self.prompt_cache_ttl.as_deref());
+        }
         translate_response(self.post_request(&body).await?)
     }
 
@@ -861,6 +946,104 @@ mod tests {
         Ok(())
     }
 
+    fn cache_request() -> AiRequest {
+        let mut req = request(vec![
+            message(AiRole::User, Some("first")),
+            message(AiRole::Assistant, Some("answer")),
+            message(AiRole::User, Some("second")),
+        ]);
+        req.system = Some("Be precise".into());
+        req.tools = Some(vec![AiTool {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: json!({"type": "object"}),
+        }]);
+        req
+    }
+
+    fn cached_value(req: AiRequest, ttl: Option<&str>) -> Result<Value> {
+        let mut translated = translate_request(req, "openai.gpt".into(), 100, None)?;
+        apply_prompt_cache(&mut translated, ttl);
+        Ok(serde_json::to_value(translated)?)
+    }
+
+    fn breakpoints(value: &Value) -> usize {
+        value.to_string().matches("prompt_cache_breakpoint").count()
+    }
+
+    #[test]
+    fn prompt_cache_marks_system_and_last_user() -> Result<()> {
+        let value = cached_value(cache_request(), Some("30m"))?;
+
+        assert_eq!(
+            value["prompt_cache_options"],
+            json!({"mode": "implicit", "ttl": "30m"})
+        );
+        let marked = |text: &str| {
+            json!([{
+                "type": "input_text",
+                "text": text,
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }])
+        };
+        assert_eq!(value["input"][0]["content"], marked("Be precise"));
+        assert_eq!(value["input"][1]["content"], "first");
+        assert_eq!(value["input"][2]["content"], "answer");
+        assert_eq!(value["input"][3]["content"], marked("second"));
+        assert_eq!(breakpoints(&value), 2);
+        assert_eq!(breakpoints(&value["tools"]), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_cache_without_ttl_omits_it() -> Result<()> {
+        let value = cached_value(cache_request(), None)?;
+        assert_eq!(value["prompt_cache_options"], json!({"mode": "implicit"}));
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_cache_marks_injected_json_instruction() -> Result<()> {
+        let mut req = request(vec![message(AiRole::User, Some("Score it"))]);
+        req.response_format = Some(AiResponseFormat::Json { schema: None });
+        let value = cached_value(req, None)?;
+
+        assert_eq!(
+            value["input"][0]["content"][0]["text"],
+            "Respond in JSON format."
+        );
+        assert_eq!(
+            value["input"][0]["content"][0]["prompt_cache_breakpoint"],
+            json!({"mode": "explicit"})
+        );
+        assert_eq!(breakpoints(&value), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_cache_leaves_replayed_items_unchanged() -> Result<()> {
+        let items = vec![
+            json!({"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}),
+            json!({"type": "message", "role": "assistant",
+                   "content": [{"type": "output_text", "text": "done"}]}),
+            json!({"type": "function_call", "call_id": "call_1", "name": "inspect",
+                   "arguments": "{}"}),
+        ];
+        let mut assistant = message(AiRole::Assistant, None);
+        assistant.thought_signature = Some(encode_replay(items.clone()));
+        let mut tool = message(AiRole::Tool, Some("contents"));
+        tool.tool_call_id = Some("call_1".into());
+        let mut req = request(vec![message(AiRole::User, Some("go")), assistant, tool]);
+        req.system = Some("Be precise".into());
+
+        let value = cached_value(req, None)?;
+        let input = value["input"].as_array().unwrap();
+        assert_eq!(input[2..5], items[..]);
+        assert_eq!(input[5]["type"], "function_call_output");
+        assert_eq!(breakpoints(&value), 2);
+        Ok(())
+    }
+
     fn local_client(url: &str) -> MantleClient {
         MantleClient::new(MantleOptions {
             model: "openai.gpt-test".into(),
@@ -912,6 +1095,39 @@ mod tests {
             OpenAiCompatError::RateLimitExceeded(Duration::from_secs(7)).ai_error_class()
         );
         assert_eq!(classify_ai_error(&rejected), crate::ai::AiErrorClass::Fatal);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prompt_caching_setting_reaches_the_request() -> Result<()> {
+        let ok = json!({"status": "completed", "output": []}).to_string();
+        let (server, bodies) = test_http::serve_sequence(vec![
+            test_http::complete("200 OK", "", &ok),
+            test_http::complete("200 OK", "", &ok),
+        ])
+        .await;
+        let mut cached = local_client(&server.url);
+        cached.prompt_caching = true;
+        cached.prompt_cache_ttl = Some("1h".into());
+        let uncached = local_client(&server.url);
+
+        cached.generate_content(cache_request()).await?;
+        uncached.generate_content(cache_request()).await?;
+        server.finish().await;
+
+        let sent: Vec<Value> = bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(
+            sent[0]["prompt_cache_options"],
+            json!({"mode": "implicit", "ttl": "1h"})
+        );
+        assert_eq!(breakpoints(&sent[0]), 2);
+        assert!(sent[1].get("prompt_cache_options").is_none());
+        assert_eq!(breakpoints(&sent[1]), 0);
         Ok(())
     }
 

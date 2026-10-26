@@ -754,6 +754,8 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                         effort,
                         api_timeout_secs: ai.api_timeout_secs,
                         api_key,
+                        prompt_caching: enable_caching,
+                        prompt_cache_ttl: bedrock.and_then(|b| b.prompt_cache_ttl.clone()),
                     },
                 )?));
             }

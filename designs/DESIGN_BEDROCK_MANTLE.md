@@ -58,8 +58,21 @@ and other 4xx are fatal. A response that is `incomplete` for any reason other
 than `max_output_tokens` is an error; `max_output_tokens` marks the response
 truncated.
 
+## Prompt caching
+
+With `[ai.bedrock] prompt_caching` (default on), requests carry
+`prompt_cache_options` in `implicit` mode with the optional
+`prompt_cache_ttl`, and an explicit `prompt_cache_breakpoint` on the last
+`input_text` of the final system message and of the last user message.
+Implicit mode adds Bedrock's own breakpoint on the latest message, which
+covers the tool-call history; two explicit breakpoints keep the total within
+Bedrock's four cache writes per request. Replayed output items and tool
+results are never marked. Cache reads are reported as `cached_tokens`; cache
+writes are only logged, since `AiUsage` has no field for them.
+
 ## Caching
 
 `cache_identity` adds `api=mantle`, the region, the base URL, the effort and
 the output cap to the model, so a response recorded through Converse is never
-replayed for Mantle and vice versa.
+replayed for Mantle and vice versa. Prompt-cache settings change cost, not
+answers, so they stay out of it.

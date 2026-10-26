@@ -17,6 +17,9 @@ region = "us-east-1"
 # Output limit; includes hidden reasoning tokens.
 max_tokens = 32768
 effort = "high"   # sent as reasoning.effort
+# Prompt cache breakpoints (default on); the TTL is optional.
+prompt_caching = true
+# prompt_cache_ttl = "30m"
 # OpenAI models use bedrock-mantle by default.
 # openai_api = "converse"
 # Some models are served under /openai/v1; see the model card.

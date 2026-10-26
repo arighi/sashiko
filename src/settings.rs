@@ -438,6 +438,10 @@ pub struct BedrockSettings {
     /// /openai/v1. Defaults to https://bedrock-mantle.<region>.api.aws/v1.
     #[serde(default)]
     pub mantle_base_url: Option<String>,
+    /// bedrock-mantle prompt cache TTL sent as prompt_cache_options.ttl, e.g.
+    /// "30m". Leave unset for the service default.
+    #[serde(default)]
+    pub prompt_cache_ttl: Option<String>,
 }
 
 #[cfg(feature = "bedrock")]
