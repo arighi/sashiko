@@ -724,6 +724,39 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
             let max_tokens = bedrock.map(|b| b.max_tokens).unwrap_or(8192);
             let thinking = bedrock.and_then(|b| b.thinking.clone());
             let effort = bedrock.and_then(|b| b.effort.clone());
+            let openai_api = bedrock.map(|b| b.openai_api).unwrap_or_default();
+            let use_mantle = openai_api == crate::settings::BedrockOpenAiApi::Mantle;
+            if use_mantle
+                && bedrock::is_openai_model(&model)
+                && !bedrock_mantle::accepts_model(&model)
+            {
+                tracing::info!(
+                    "[ai.bedrock] {model} is an inference profile, which bedrock-mantle \
+                     does not accept; using the Converse API"
+                );
+            }
+            if use_mantle && bedrock_mantle::accepts_model(&model) {
+                if thinking.is_some() {
+                    tracing::warn!(
+                        "[ai.bedrock] thinking is Anthropic-only; ignoring it for {model}"
+                    );
+                }
+                let api_key = std::env::var(bedrock_mantle::BEARER_TOKEN_ENV)
+                    .ok()
+                    .map(|key| key.trim().to_string())
+                    .filter(|key| !key.is_empty());
+                return Ok(Arc::new(bedrock_mantle::MantleClient::new(
+                    bedrock_mantle::MantleOptions {
+                        model,
+                        region,
+                        base_url: bedrock.and_then(|b| b.mantle_base_url.clone()),
+                        max_tokens,
+                        effort,
+                        api_timeout_secs: ai.api_timeout_secs,
+                        api_key,
+                    },
+                )?));
+            }
             Ok(Arc::new(bedrock::BedrockClient::new(
                 model,
                 region,
@@ -945,6 +978,10 @@ pub mod acp;
 pub mod backoff_provider;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+#[cfg(feature = "bedrock")]
+pub mod bedrock_mantle;
+#[cfg(feature = "bedrock")]
+pub(crate) mod bedrock_token;
 #[cfg(feature = "cache")]
 pub mod cache;
 pub mod claude;
@@ -1271,6 +1308,24 @@ mod tests {
             cached_tokens: None,
         };
         assert_eq!(fallback_only.uncached_tokens(), 42);
+    }
+
+    #[cfg(feature = "bedrock")]
+    #[test]
+    fn bedrock_routes_openai_models_to_mantle_unless_opted_out() {
+        let identity = |model: &str, extra: &str| {
+            let ai: crate::settings::AiSettings = toml::from_str(&format!(
+                "provider = \"bedrock\"\nmodel = \"{model}\"\n\
+                 [bedrock]\nregion = \"us-east-1\"\n{extra}"
+            ))
+            .unwrap();
+            create_provider_from_ai(&ai).unwrap().cache_identity()
+        };
+
+        assert!(identity("openai.gpt-5.6-sol", "").contains("|api=mantle"));
+        assert!(!identity("openai.gpt-5.6-sol", "openai_api = \"converse\"").contains("api="));
+        assert!(!identity("global.openai.gpt-6-astra", "").contains("api="));
+        assert!(!identity("us.anthropic.claude-sonnet-4", "").contains("api="));
     }
 
     #[tokio::test]

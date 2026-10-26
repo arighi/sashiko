@@ -222,7 +222,7 @@ struct ConverseParams {
 }
 
 /// Application inference profile ARNs carry no model name and fall back to Anthropic fields.
-fn is_openai_model(model_id: &str) -> bool {
+pub(crate) fn is_openai_model(model_id: &str) -> bool {
     model_id.contains("openai.")
 }
 

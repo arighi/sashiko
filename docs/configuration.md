@@ -247,15 +247,20 @@ Settings for the Devin CLI provider (`provider = "devin-cli"`). An empty
 #### `[ai.bedrock]`
 
 Settings for AWS Bedrock (`provider = "bedrock"`). Only exists in a build
-with `--features bedrock`.
+with `--features bedrock`. OpenAI foundation model IDs (`openai.*`) use the
+OpenAI Responses API on bedrock-mantle, see
+[LLM providers](llm-providers.md#openai-models-bedrock-mantle); all other
+models use the Converse API.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `region` | string | AWS SDK default chain | AWS region, e.g. `"us-east-1"`. |
-| `prompt_caching` | bool | `true` | Anthropic prompt caching. Set `false` for non-Anthropic models. |
-| `max_tokens` | integer | `8192` | Max output tokens per Converse call. |
-| `thinking` | string | -- | `"adaptive"` for Anthropic models; unset disables thinking. |
+| `prompt_caching` | bool | `true` | Anthropic prompt caching on the Converse API; set `false` for non-Anthropic models there. |
+| `max_tokens` | integer | `8192` | Max output tokens per call. On bedrock-mantle this is `max_output_tokens`, which includes reasoning tokens, so raise it for high effort levels. |
+| `thinking` | string | -- | `"adaptive"` for Anthropic models; unset disables thinking. Ignored on bedrock-mantle. |
 | `effort` | string | -- | `"low"`, `"medium"`, `"high"`, `"xhigh"` (Opus 4.7 only), `"max"`. Sent as `output_config.effort`, or as `reasoning.effort` for model IDs containing `openai.`. |
+| `openai_api` | string | `"mantle"` | API for OpenAI foundation model IDs (`openai.*`): `"mantle"` sends them to the OpenAI Responses API on bedrock-mantle, `"converse"` keeps them on the Converse API. Inference profile IDs (`global.openai.*`) and ARNs always use Converse. |
+| `mantle_base_url` | string | `https://bedrock-mantle.<region>.api.aws/v1` | bedrock-mantle API root, ending in `/v1` or `/responses`. Needed for models served under `/openai/v1`. A region in the URL also selects the signing region. |
 
 #### `[ai.vertex]`
 
@@ -585,6 +590,7 @@ Downstream tools can parse this format with simple line splitting.
 | `ANTHROPIC_CUSTOM_HEADERS` | Extra HTTP headers for the Claude API, one `Name: value` per line. |
 | `OPENAI_API_KEY` | API key for OpenAI-compatible providers (takes precedence over `LLM_API_KEY`). |
 | `VLLM_API_KEY` | API key for a vLLM server started with `--api-key` (takes precedence over `LLM_API_KEY`). |
+| `AWS_BEARER_TOKEN_BEDROCK` | Long-term Amazon Bedrock API key for OpenAI models on bedrock-mantle. Unset derives short-term keys from the AWS credential chain. |
 | `ANTHROPIC_BASE_URL` | Override the Claude API base URL (for proxies). |
 | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_BASE_URL` | Gemini API base URL; outranks `[ai.gemini] base_url`. |
 | `GEMINI_PROXY_COMMAND`, `GEMINI_AUTH_TOKEN_COMMAND`, `GEMINI_AUTH_TOKEN` | Outrank `[ai.gemini] proxy_command` / `auth_token_command`; `GEMINI_AUTH_TOKEN` is a literal Bearer token. |

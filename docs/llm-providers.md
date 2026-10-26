@@ -158,9 +158,10 @@ cp docs/examples/Settings.copilot-cli.toml Settings.toml
 
 ## AWS Bedrock
 
-Uses AWS Bedrock via the Converse API. Works with any Bedrock-hosted
-model (Claude, Llama, Mistral, etc.). Requires building with
-`--features bedrock`.
+Uses AWS Bedrock via the Converse API, or the OpenAI Responses API on the
+`bedrock-mantle` endpoint for OpenAI models (see below). Works with any
+Bedrock-hosted model (Claude, GPT, Llama, Mistral, etc.). Requires building
+with `--features bedrock`.
 
 **Prerequisites:** Enable model access in the
 [AWS Bedrock console](https://console.aws.amazon.com/bedrock/) for your
@@ -191,18 +192,51 @@ cp docs/examples/Settings.claude-bedrock.toml Settings.toml
 - Cross-region inference profiles (e.g. `us.anthropic.claude-*`)
 - Full tool/function calling support
 
-Some models (e.g. OpenAI reasoning models) reject the `temperature`
-field. Sashiko retries an explicit unsupported-temperature
-`ValidationException` without the field and omits it on later requests
-to the same model.
-
 **Non-Claude models:** `prompt_caching` and `thinking` under
-`[ai.bedrock]` are Anthropic-specific; set `prompt_caching = false` and
-leave `thinking` unset. For model IDs containing `openai.`, `effort` is
-sent as `reasoning.effort` instead of `output_config.effort` (GPT-6
-Astra accepts `low`, `medium`, `high`, `xhigh`, `max`); for
-other non-Claude models leave it unset. Application inference profile
-ARNs carry no model name and always get the Anthropic fields.
+`[ai.bedrock]` are Anthropic-specific on the Converse API; set
+`prompt_caching = false` and leave `thinking` unset. Application inference
+profile ARNs carry no model name and always get the Anthropic fields.
+
+### OpenAI models (bedrock-mantle)
+
+OpenAI foundation model IDs (starting with `openai.`, such as
+`openai.gpt-5.6-sol`) are sent to the OpenAI Responses API on the
+`bedrock-mantle` endpoint (`https://bedrock-mantle.<region>.api.aws/v1`)
+instead of the Converse API. Mantle does not accept inference profile IDs
+(`global.openai.*`, `us.openai.*`) or ARNs, so those stay on the Converse
+API; the model ID is always sent as configured.
+
+```bash
+cp docs/examples/Settings.gpt-bedrock.toml Settings.toml
+```
+
+- **Authentication:** Mantle takes Amazon Bedrock API keys. Sashiko derives a
+  short-term key (valid up to 12 hours, and no longer than the AWS
+  credentials it is signed with) from the standard AWS credential chain and
+  renews it before it expires, so no extra secret is needed. Set
+  `AWS_BEARER_TOKEN_BEDROCK` to use a long-term key instead. IAM needs
+  `bedrock-mantle:CreateInference`.
+- **Region:** `[ai.bedrock] region`, else the AWS default chain
+  (`AWS_REGION`, profile). Mantle is available in a subset of Bedrock
+  regions.
+- **Endpoint:** some models are served under `/openai/v1` rather than `/v1`
+  (the request then fails with ``model `<id>` isn't supported on this
+  route``). Set `mantle_base_url = "https://bedrock-mantle.<region>.api.aws/openai/v1"`
+  for those, as listed on the model card's Programmatic Access table.
+- **Reasoning:** `effort` is sent as `reasoning.effort`. `temperature` is
+  never sent, since OpenAI reasoning models reject it, and `thinking` is
+  ignored. Requests are stateless (`store: false`); encrypted reasoning is
+  returned with each response and replayed on the next tool-call turn.
+- **Output limit:** `max_tokens` becomes `max_output_tokens`, which includes
+  hidden reasoning tokens. Raise it well above the default `8192` for high
+  effort levels, or answers come back truncated.
+
+Set `openai_api = "converse"` under `[ai.bedrock]` to keep OpenAI
+foundation models on the Converse API, where inference profile IDs always
+run. There, `effort` is sent as `reasoning.effort` in
+`additionalModelRequestFields`, and a model that rejects `temperature` with
+an explicit unsupported-temperature `ValidationException` is retried
+without it, which is then omitted on later requests to the same model.
 
 ## Google Cloud Vertex AI
 

@@ -429,6 +429,24 @@ pub struct BedrockSettings {
     /// Leave unset to use the model default.
     #[serde(default)]
     pub effort: Option<String>,
+    /// API for OpenAI foundation model IDs ("openai.*"): the bedrock-mantle
+    /// Responses API (default) or the Converse API. Inference profile IDs
+    /// always use Converse, since Mantle does not accept them.
+    #[serde(default)]
+    pub openai_api: BedrockOpenAiApi,
+    /// Override the bedrock-mantle API root, e.g. for models served under
+    /// /openai/v1. Defaults to https://bedrock-mantle.<region>.api.aws/v1.
+    #[serde(default)]
+    pub mantle_base_url: Option<String>,
+}
+
+#[cfg(feature = "bedrock")]
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BedrockOpenAiApi {
+    #[default]
+    Mantle,
+    Converse,
 }
 
 #[cfg(feature = "bedrock")]
