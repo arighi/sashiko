@@ -43,7 +43,7 @@ flowchart LR
 
     subgraph PostVerify ["3. Parallel post-verification-1..N"]
         PVF["Confirmed Findings\nPVF1 .. PVFr\nsource_ids: [H*]"]
-        PVD["Refuted Hard Cases\nPVD1 .. PVDs\nsource_ids: [H*]"]
+        PVD["Dismissed Hard Cases\nPVD1 .. PVDs\nsource_ids: [H*]"]
     end
 
     C --> VF
@@ -64,7 +64,7 @@ flowchart LR
 | `verification` | `dismissed_concerns[]` (Category `1b`) | `VD1` .. `VDq` | `source_ids: ["D1", ...]` | Terminal `Dismissed (1b)` |
 | `verification` | `hard_cases[]` (Category `2`) | `H1` .. `Hk` | `source_ids: ["C2", "D1", ...]` | Routed to `post-verification-1..N` (`assigned_stage`) |
 | `post-verification-1..N` | `findings[]` | `PVF1` .. `PVFr` | `source_ids: ["H1", ...]` | Promoted to final `findings[]` |
-| `post-verification-1..N` | `dismissed_concerns[]` | `PVD1` .. `PVDs` | `source_ids: ["H2", ...]` | Terminal `Refuted in Post-Verification` |
+| `post-verification-1..N` | `dismissed_concerns[]` | `PVD1` .. `PVDs` | `source_ids: ["H2", ...]` | Terminal `Dismissed in Post-Verification` |
 
 ### 2.2 Validator Invariants
 
@@ -181,10 +181,10 @@ Clicking **`View Review Map`** navigates to `#/map/<review_id>`.
    - Standard `patchset-header` with patchset/patch subject, Review ID, model, token summary, and `prompts_hash`.
    - Pre-screen guides (`prompts.pre_screen`) are displayed inline right after the `pre-screen` stage output in the Stages table; per-stage static and tool-read guides appear in each stage row's `Prompts` column.
 2. **Findings & Concerns Table (`Issue` | `Stages` | `Outcome`):**
-   - Sorted with confirmed findings first (ordered by severity `Critical` > `High` > `Medium` > `Low`), followed by hard cases refuted in `post-verification`, followed by `1b` direct dismissals.
-   - Collapsed rows show only the 1-line issue title, the chronological list of stage tags (`locking`, `verification`, `post-verification-1`), and the final outcome (`High`, `Refuted`, `Dismissed`).
+   - Sorted with confirmed findings first (ordered by severity `Critical` > `High` > `Medium` > `Low`), followed by hard cases dismissed in `post-verification`, followed by `1b` direct dismissals.
+   - Collapsed rows show only the 1-line issue title, the chronological list of stage tags (`locking`, `verification`, `post-verification-1`), and the final outcome (`High`, `Dismissed`, `Unresolved`).
 3. **Expandable Issue Card (`Pipeline History` + `Code Trace`):**
-   - **Pipeline History:** Chronological progression across stages (`Raised concern` / `Dismissed in stage` -> `verification` -> `post-verification-N` confirmation or refutation), each with a `View stage log` link. For escalated hard cases (`H*`), `verification` displays `verification_question` and, whenever `verification` merged multiple concerns, resolved competing signals, or promoted a standalone dismissal, also displays the synthesized `concern_arguments` and `dismissal_arguments` (omitting `concern_arguments` only for a single uncontested concern whose reasoning is already shown in the immediately preceding step).
+   - **Pipeline History:** Chronological progression across stages (`Raised concern` / `Dismissed in stage` -> `verification` -> `post-verification-N` confirmation or dismissal), each with a `View stage log` link. For escalated hard cases (`H*`), `verification` displays `verification_question` and, whenever `verification` merged multiple concerns, resolved competing signals, or promoted a standalone dismissal, also displays the synthesized `concern_arguments` and `dismissal_arguments` (omitting `concern_arguments` only for a single uncontested concern whose reasoning is already shown in the immediately preceding step).
    - **Code Trace:** Single clean container listing numbered call-stack/proof locations (`file:line (symbol)`), explanation, and dedented code snippets.
 4. **Stages Table (`Stage` | `Turns` | `Tokens (In / Cached / Out)` | `Prompts` | `Output`):**
    - Lists active stages in execution order (with skipped stages summarized on a muted footer line).
