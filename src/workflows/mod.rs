@@ -117,7 +117,7 @@ pub fn planned_stages_from(project: ProjectId, stage_names: &[&'static str]) -> 
 
 /// Replaces the `"post-verification"` placeholder in `planned_stages` with the
 /// concrete `post-verification-*` stages resolved after `verification` (which
-/// may be empty when no hard cases exist, or up to 10 stages when hard cases
+/// may be empty when no inconclusive concerns exist, or up to 10 stages when inconclusive concerns
 /// fan out in parallel).
 pub fn refine_planned_stages_with_post_verification(
     planned_stages: &[String],

@@ -2218,7 +2218,7 @@ mod tests {
             "stages": [{"name": "pre-screen", "log_start": 0, "log_end": 2}],
             "raw_concerns": [{"id": "C1"}],
             "raw_dismissed_concerns": [],
-            "verification": {"findings": [], "hard_cases": [], "dismissed_concerns": []},
+            "verification": {"findings": [], "inconclusive_concerns": [], "dismissed_concerns": []},
             "post_verification": {"findings": [], "dismissed_concerns": []},
             "threads": [{"thread_id": "T1"}],
         });

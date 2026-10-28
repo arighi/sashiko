@@ -63,19 +63,22 @@ fn split_raw_ids(ids: &[String]) -> (Vec<String>, Vec<String>) {
     (concerns, dismissed)
 }
 
-fn collect_raw_ids_from_pv_item(item: &Value, hard_cases: &[Value]) -> (Vec<String>, Vec<String>) {
+fn collect_raw_ids_from_pv_item(
+    item: &Value,
+    inconclusive_concerns: &[Value],
+) -> (Vec<String>, Vec<String>) {
     let mut raw_ids = extract_string_array(item, "raw_source_ids");
-    let h_ids = extract_string_array(item, "source_ids");
-    for hid in &h_ids {
-        if hid.starts_with('C') || hid.starts_with('D') {
-            push_unique(&mut raw_ids, hid);
+    let i_ids = extract_string_array(item, "source_ids");
+    for iid in &i_ids {
+        if iid.starts_with('C') || iid.starts_with('D') {
+            push_unique(&mut raw_ids, iid);
             continue;
         }
-        if let Some(hc) = hard_cases
+        if let Some(ic) = inconclusive_concerns
             .iter()
-            .find(|hc| hc.get("id").and_then(Value::as_str) == Some(hid.as_str()))
+            .find(|ic| ic.get("id").and_then(Value::as_str) == Some(iid.as_str()))
         {
-            for sid in extract_string_array(hc, "source_ids") {
+            for sid in extract_string_array(ic, "source_ids") {
                 push_unique(&mut raw_ids, &sid);
             }
         }
@@ -99,7 +102,7 @@ fn outcome_rank(outcome: &str) -> u8 {
         "finding" => 6,
         "preexisting_concern" => 5,
         "dismissed_post_verification" => 4,
-        "unresolved_hard_case" => 3,
+        "unresolved_inconclusive" => 3,
         "dismissed_1b" => 2,
         "unverified_concern" => 1,
         _ => 0,
@@ -134,12 +137,12 @@ fn item_type(item: &Value, state: &LinuxPatchReviewState) -> String {
         push_unique(&mut candidate_ids, &rid);
     }
     for cid in &candidate_ids {
-        if let Some(hc) = state
-            .hard_cases
+        if let Some(ic) = state
+            .inconclusive_concerns
             .iter()
-            .find(|hc| hc.get("id").and_then(Value::as_str) == Some(cid.as_str()))
+            .find(|ic| ic.get("id").and_then(Value::as_str) == Some(cid.as_str()))
         {
-            if let Some(t) = hc
+            if let Some(t) = ic
                 .get("type")
                 .and_then(Value::as_str)
                 .map(str::trim)
@@ -147,7 +150,7 @@ fn item_type(item: &Value, state: &LinuxPatchReviewState) -> String {
             {
                 return t.to_string();
             }
-            for sid in extract_string_array(hc, "source_ids") {
+            for sid in extract_string_array(ic, "source_ids") {
                 if let Some(raw) = state
                     .all_concerns
                     .iter()
@@ -180,7 +183,7 @@ fn item_type(item: &Value, state: &LinuxPatchReviewState) -> String {
     String::new()
 }
 
-fn item_severity(item: &Value, hard_cases: &[Value]) -> String {
+fn item_severity(item: &Value, inconclusive_concerns: &[Value]) -> String {
     for key in ["severity", "estimated_severity"] {
         if let Some(s) = item
             .get(key)
@@ -191,13 +194,13 @@ fn item_severity(item: &Value, hard_cases: &[Value]) -> String {
             return s.to_string();
         }
     }
-    for hid in extract_string_array(item, "source_ids") {
-        if let Some(hc) = hard_cases
+    for iid in extract_string_array(item, "source_ids") {
+        if let Some(ic) = inconclusive_concerns
             .iter()
-            .find(|hc| hc.get("id").and_then(Value::as_str) == Some(hid.as_str()))
-            && let Some(s) = hc
+            .find(|ic| ic.get("id").and_then(Value::as_str) == Some(iid.as_str()))
+            && let Some(s) = ic
                 .get("estimated_severity")
-                .or_else(|| hc.get("severity"))
+                .or_else(|| ic.get("severity"))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -221,11 +224,11 @@ fn item_locations(item: &Value, state: &LinuxPatchReviewState) -> Vec<Value> {
         push_unique(&mut candidate_ids, &rid);
     }
     for cid in &candidate_ids {
-        if let Some(hc) = state
-            .hard_cases
+        if let Some(ic) = state
+            .inconclusive_concerns
             .iter()
-            .find(|hc| hc.get("id").and_then(Value::as_str) == Some(cid.as_str()))
-            && let Some(arr) = hc
+            .find(|ic| ic.get("id").and_then(Value::as_str) == Some(cid.as_str()))
+            && let Some(arr) = ic
                 .get("locations")
                 .and_then(Value::as_array)
                 .filter(|a| !a.is_empty())
@@ -348,7 +351,7 @@ fn stage_signal_counts(state: &LinuxPatchReviewState, stage_name: &str) -> (usiz
             state
                 .verification_findings
                 .len()
-                .saturating_add(state.hard_cases.len()),
+                .saturating_add(state.inconclusive_concerns.len()),
             state.verification_dismissed.len(),
         );
     }
@@ -392,7 +395,7 @@ fn stage_signal_counts(state: &LinuxPatchReviewState, stage_name: &str) -> (usiz
 fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
     let mut threads = Vec::new();
     let mut accounted_raw_ids = BTreeSet::new();
-    let mut resolved_hard_case_ids = BTreeSet::new();
+    let mut resolved_inconclusive_ids = BTreeSet::new();
 
     // 1. Direct verification findings (Category 1a: VF*)
     for vf in &state.verification_findings {
@@ -420,7 +423,7 @@ fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
             "outcome": outcome,
             "title": item_title(vf),
             "type": item_type(vf, state),
-            "severity": item_severity(vf, &state.hard_cases),
+            "severity": item_severity(vf, &state.inconclusive_concerns),
             "preexisting": preexisting,
             "locations": item_locations(vf, state),
             "stages": extract_string_array(vf, "stages"),
@@ -442,14 +445,15 @@ fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
             .or_else(|| pvf.get("id"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let h_ids: Vec<String> = extract_string_array(pvf, "source_ids")
+        let i_ids: Vec<String> = extract_string_array(pvf, "source_ids")
             .into_iter()
-            .filter(|id| id.starts_with('H'))
+            .filter(|id| id.starts_with('I'))
             .collect();
-        for hid in &h_ids {
-            resolved_hard_case_ids.insert(hid.clone());
+        for iid in &i_ids {
+            resolved_inconclusive_ids.insert(iid.clone());
         }
-        let (raw_concerns, raw_dismissed) = collect_raw_ids_from_pv_item(pvf, &state.hard_cases);
+        let (raw_concerns, raw_dismissed) =
+            collect_raw_ids_from_pv_item(pvf, &state.inconclusive_concerns);
         for id in raw_concerns.iter().chain(raw_dismissed.iter()) {
             accounted_raw_ids.insert(id.clone());
         }
@@ -471,32 +475,33 @@ fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
             "outcome": outcome,
             "title": item_title(pvf),
             "type": item_type(pvf, state),
-            "severity": item_severity(pvf, &state.hard_cases),
+            "severity": item_severity(pvf, &state.inconclusive_concerns),
             "preexisting": preexisting,
             "locations": item_locations(pvf, state),
             "stages": extract_string_array(pvf, "stages"),
             "prompts": extract_string_array(pvf, "prompts"),
             "raw_concern_ids": raw_concerns,
             "raw_dismissed_ids": raw_dismissed,
-            "verification_kind": "hard_case",
-            "verification_id": h_ids.first().cloned(),
-            "verification_ids": h_ids,
+            "verification_kind": "inconclusive",
+            "verification_id": i_ids.first().cloned(),
+            "verification_ids": i_ids,
             "post_verification_stage": pv_stage,
             "post_verification_id": pvf_id,
         }));
     }
 
-    // 2b. Hard cases dismissed in post-verification (PVD*)
+    // 2b. Inconclusive concerns dismissed in post-verification (PVD*)
     for pvd in &state.post_verification_dismissed {
         let pvd_id = pvd.get("id").and_then(Value::as_str).map(str::to_string);
-        let h_ids: Vec<String> = extract_string_array(pvd, "source_ids")
+        let i_ids: Vec<String> = extract_string_array(pvd, "source_ids")
             .into_iter()
-            .filter(|id| id.starts_with('H'))
+            .filter(|id| id.starts_with('I'))
             .collect();
-        for hid in &h_ids {
-            resolved_hard_case_ids.insert(hid.clone());
+        for iid in &i_ids {
+            resolved_inconclusive_ids.insert(iid.clone());
         }
-        let (raw_concerns, raw_dismissed) = collect_raw_ids_from_pv_item(pvd, &state.hard_cases);
+        let (raw_concerns, raw_dismissed) =
+            collect_raw_ids_from_pv_item(pvd, &state.inconclusive_concerns);
         for id in raw_concerns.iter().chain(raw_dismissed.iter()) {
             accounted_raw_ids.insert(id.clone());
         }
@@ -509,49 +514,49 @@ fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
             "outcome": "dismissed_post_verification",
             "title": item_title(pvd),
             "type": item_type(pvd, state),
-            "severity": item_severity(pvd, &state.hard_cases),
+            "severity": item_severity(pvd, &state.inconclusive_concerns),
             "preexisting": false,
             "locations": item_locations(pvd, state),
             "stages": extract_string_array(pvd, "stages"),
             "prompts": extract_string_array(pvd, "prompts"),
             "raw_concern_ids": raw_concerns,
             "raw_dismissed_ids": raw_dismissed,
-            "verification_kind": "hard_case",
-            "verification_id": h_ids.first().cloned(),
-            "verification_ids": h_ids,
+            "verification_kind": "inconclusive",
+            "verification_id": i_ids.first().cloned(),
+            "verification_ids": i_ids,
             "post_verification_stage": pv_stage,
             "post_verification_id": pvd_id,
         }));
     }
 
-    // 2c. Any hard cases not resolved by post-verification (e.g. partial stage runs)
-    for hc in &state.hard_cases {
-        let Some(hid) = hc.get("id").and_then(Value::as_str) else {
+    // 2c. Any inconclusive concerns not resolved by post-verification (e.g. partial stage runs)
+    for ic in &state.inconclusive_concerns {
+        let Some(iid) = ic.get("id").and_then(Value::as_str) else {
             continue;
         };
-        if resolved_hard_case_ids.contains(hid) {
+        if resolved_inconclusive_ids.contains(iid) {
             continue;
         }
-        let source_ids = extract_string_array(hc, "source_ids");
+        let source_ids = extract_string_array(ic, "source_ids");
         let (raw_concerns, raw_dismissed) = split_raw_ids(&source_ids);
         for id in raw_concerns.iter().chain(raw_dismissed.iter()) {
             accounted_raw_ids.insert(id.clone());
         }
         threads.push(json!({
-            "outcome": "unresolved_hard_case",
-            "title": item_title(hc),
-            "type": item_type(hc, state),
-            "severity": item_severity(hc, &state.hard_cases),
-            "preexisting": hc.get("preexisting").and_then(Value::as_bool).unwrap_or(false),
-            "locations": item_locations(hc, state),
-            "stages": extract_string_array(hc, "stages"),
-            "prompts": extract_string_array(hc, "prompts"),
+            "outcome": "unresolved_inconclusive",
+            "title": item_title(ic),
+            "type": item_type(ic, state),
+            "severity": item_severity(ic, &state.inconclusive_concerns),
+            "preexisting": ic.get("preexisting").and_then(Value::as_bool).unwrap_or(false),
+            "locations": item_locations(ic, state),
+            "stages": extract_string_array(ic, "stages"),
+            "prompts": extract_string_array(ic, "prompts"),
             "raw_concern_ids": raw_concerns,
             "raw_dismissed_ids": raw_dismissed,
-            "verification_kind": "hard_case",
-            "verification_id": hid,
-            "verification_ids": [hid],
-            "post_verification_stage": hc.get("assigned_stage").and_then(Value::as_str),
+            "verification_kind": "inconclusive",
+            "verification_id": iid,
+            "verification_ids": [iid],
+            "post_verification_stage": ic.get("assigned_stage").and_then(Value::as_str),
             "post_verification_id": Value::Null,
         }));
     }
@@ -700,7 +705,7 @@ pub fn build_review_map(
         "raw_dismissed_concerns": state.all_dismissed_concerns,
         "verification": {
             "findings": state.verification_findings,
-            "hard_cases": state.hard_cases,
+            "inconclusive_concerns": state.inconclusive_concerns,
             "dismissed_concerns": state.verification_dismissed,
         },
         "post_verification": {
@@ -758,8 +763,8 @@ mod tests {
                 "prompts": ["networking.md"],
                 "locations": [{"file": "net/foo.c", "line": 42, "function_or_symbol": "foo"}],
             })],
-            hard_cases: vec![json!({
-                "id": "H1",
+            inconclusive_concerns: vec![json!({
+                "id": "I1",
                 "source_ids": ["C2"],
                 "type": "Concurrency Hazard",
                 "description": "Possible lock inversion in bar()",
@@ -779,7 +784,7 @@ mod tests {
             })],
             post_verification_dismissed: vec![json!({
                 "id": "PVD1",
-                "source_ids": ["H1"],
+                "source_ids": ["I1"],
                 "raw_source_ids": ["C2"],
                 "post_verification_stage": "post-verification-1",
                 "description": "Lock order is consistent across all callers",
@@ -834,7 +839,7 @@ mod tests {
 
         assert_eq!(threads[1]["thread_id"], "T2");
         assert_eq!(threads[1]["outcome"], "dismissed_post_verification");
-        assert_eq!(threads[1]["verification_id"], "H1");
+        assert_eq!(threads[1]["verification_id"], "I1");
         assert_eq!(threads[1]["post_verification_id"], "PVD1");
         assert_eq!(threads[1]["raw_concern_ids"], json!(["C2"]));
 

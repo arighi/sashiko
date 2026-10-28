@@ -469,7 +469,7 @@ impl Worker {
             post_verification_findings: Vec::new(),
             post_verification_dismissed: Vec::new(),
             deduplicated_dismissed_concerns: Vec::new(),
-            hard_cases: Vec::new(),
+            inconclusive_concerns: Vec::new(),
             concerns: Vec::new(),
             findings: Vec::new(),
             summary: String::new(),
@@ -1424,17 +1424,17 @@ mod tests {
 
             // Dispatch on the heading each stage's instruction opens with.
             // Analysis stages return concerns/dismissed_concerns, verification
-            // returns findings/hard_cases/dismissed_concerns, and
+            // returns findings/inconclusive_concerns/dismissed_concerns, and
             // post-verification returns findings/dismissed_concerns.
             let content = if last_user.contains("# Analyze commit main goal") {
                 r#"{"concerns": [{"type": "Bug", "description": "some issue", "reasoning": "reason", "preexisting": false, "locations": []}], "dismissed_concerns": []}"#
             } else if last_user.contains("# Verification and severity estimation")
                 || last_user.contains("# Consolidate, classify, and verify concerns")
             {
-                r#"{"findings": [], "hard_cases": [{"source_ids": ["C1"], "type": "Bug", "description": "some issue", "estimated_severity": "High", "signal_reason": "series_interaction", "concern_arguments": "reason", "dismissal_arguments": "", "verification_question": "check series end", "preexisting": false, "locations": []}], "dismissed_concerns": []}"#
+                r#"{"findings": [], "inconclusive_concerns": [{"source_ids": ["C1"], "type": "Bug", "description": "some issue", "estimated_severity": "High", "signal_reason": "series_interaction", "concern_arguments": "reason", "dismissal_arguments": "", "verification_question": "check series end", "preexisting": false, "locations": []}], "dismissed_concerns": []}"#
             } else if last_user.contains("# Per-finding post-verification and conflict resolution")
             {
-                r#"{"findings": [], "dismissed_concerns": [{"source_ids": ["H1"], "description": "some issue", "reasoning": "fixed in patch 2", "locations": [{"file": "file2.c", "function_or_symbol": "patch2", "line": 1, "code_snippet": "int patch2;", "side": "REVISION"}]}]}"#
+                r#"{"findings": [], "dismissed_concerns": [{"source_ids": ["I1"], "description": "some issue", "reasoning": "fixed in patch 2", "locations": [{"file": "file2.c", "function_or_symbol": "patch2", "line": 1, "code_snippet": "int patch2;", "side": "REVISION"}]}]}"#
             } else {
                 r#"{"concerns": [], "dismissed_concerns": []}"#
             };
@@ -1622,7 +1622,7 @@ mod tests {
                 } else if last_user.contains("# Verification and severity estimation")
                     || last_user.contains("# Consolidate, classify, and verify concerns")
                 {
-                    r#"{"findings": [{"source_ids": ["C1"], "problem": "some issue", "severity": "High", "severity_explanation": "bad", "preexisting": false, "locations": []}], "hard_cases": [], "dismissed_concerns": []}"#
+                    r#"{"findings": [{"source_ids": ["C1"], "problem": "some issue", "severity": "High", "severity_explanation": "bad", "preexisting": false, "locations": []}], "inconclusive_concerns": [], "dismissed_concerns": []}"#
                 } else {
                     r#"{"concerns": [], "dismissed_concerns": []}"#
                 };
@@ -1713,7 +1713,7 @@ mod tests {
                 } else if last_user.contains("# Verification and severity estimation")
                     || last_user.contains("# Consolidate, classify, and verify concerns")
                 {
-                    r#"{"findings": [{"source_ids": ["C1"], "problem": "mm: memory leak in foo()", "severity": "High", "severity_explanation": "foo() returns -ENOMEM without freeing buf", "preexisting": true, "locations": [{"file": "foo.c", "function_or_symbol": "foo", "line": 10, "code_snippet": "return -ENOMEM;", "side": "REVISION", "why_this_location_matters": "leaks buf"}]}], "hard_cases": [], "dismissed_concerns": []}"#
+                    r#"{"findings": [{"source_ids": ["C1"], "problem": "mm: memory leak in foo()", "severity": "High", "severity_explanation": "foo() returns -ENOMEM without freeing buf", "preexisting": true, "locations": [{"file": "foo.c", "function_or_symbol": "foo", "line": 10, "code_snippet": "return -ENOMEM;", "side": "REVISION", "why_this_location_matters": "leaks buf"}]}], "inconclusive_concerns": [], "dismissed_concerns": []}"#
                 } else if last_user.contains("# LKML-friendly report generation") {
                     "commit sha1\nAuthor: Test <test@example.com>\n\nSubject\n\nSummary.\n\n> +int x;\n\n[Severity: High]\nThis problem wasn't introduced by this patch, but foo() leaks buf on error.\n"
                 } else {
@@ -1856,7 +1856,7 @@ mod tests {
             let content = if last_user.contains("# Analyze commit main goal") {
                 r#"{"concerns": [{"type": "Bug", "description": "foo() leaks buf", "reasoning": "Missing kfree", "preexisting": false, "locations": []}], "dismissed_concerns": []}"#
             } else if verification {
-                r#"{"findings": [{"source_ids": ["C1"], "problem": "foo() leaks buf", "severity": "High", "severity_explanation": "bad", "preexisting": false, "locations": []}], "hard_cases": [], "dismissed_concerns": []}"#
+                r#"{"findings": [{"source_ids": ["C1"], "problem": "foo() leaks buf", "severity": "High", "severity_explanation": "bad", "preexisting": false, "locations": []}], "inconclusive_concerns": [], "dismissed_concerns": []}"#
             } else if last_user.contains("# LKML-friendly report generation") {
                 "commit sha1\nAuthor: Test <test@example.com>\n\nSubject\n\n> +int x;\n\n[Severity: High]\nfoo() leaks buf.\n"
             } else {
