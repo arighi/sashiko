@@ -5747,7 +5747,7 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                 raw_dismissed_concerns: stampedDismissed,
                 verification: {
                     findings: stampedFindings,
-                    hard_cases: [],
+                    inconclusive_concerns: [],
                     dismissed_concerns: stampedDismissed.map((d, idx) => Object.assign({}, d, { id: `VD${idx + 1}` }))
                 },
                 post_verification: {
@@ -5968,8 +5968,9 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
 
             const verifFindings = Array.isArray(verifObj.findings) ? verifObj.findings
                 : (Array.isArray(reviewMap.verification_findings) ? reviewMap.verification_findings : []);
-            const hardCases = Array.isArray(verifObj.hard_cases) ? verifObj.hard_cases
-                : (Array.isArray(reviewMap.hard_cases) ? reviewMap.hard_cases : []);
+            // Reviews stored before the rename to inconclusive concerns use hard_cases.
+            const inconclusiveConcerns = [verifObj.inconclusive_concerns, reviewMap.inconclusive_concerns,
+                verifObj.hard_cases, reviewMap.hard_cases].find(Array.isArray) || [];
             const verifDismissed = Array.isArray(verifObj.dismissed_concerns) ? verifObj.dismissed_concerns
                 : (Array.isArray(reviewMap.verification_dismissed) ? reviewMap.verification_dismissed : []);
             const postVerifFindings = Array.isArray(postVerifObj.findings) ? postVerifObj.findings
@@ -5990,9 +5991,9 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                 const key = vf?.stage_item_id || vf?.id;
                 if (key) vfById.set(String(key), vf);
             });
-            const hcById = new Map();
-            hardCases.forEach(hc => {
-                if (hc && hc.id) hcById.set(String(hc.id), hc);
+            const icById = new Map();
+            inconclusiveConcerns.forEach(ic => {
+                if (ic && ic.id) icById.set(String(ic.id), ic);
             });
             const vdById = new Map();
             verifDismissed.forEach(vd => {
@@ -6042,7 +6043,7 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                         outcomeCellHtml = `<span style="color:var(--text-muted);">Dismissed</span>`;
                     } else if (outcome === 'dismissed_1b' || outcome === 'unverified_dismissed') {
                         outcomeCellHtml = `<span style="color:var(--text-muted);">Dismissed</span>`;
-                    } else if (outcome === 'unresolved_hard_case') {
+                    } else if (outcome === 'unresolved_inconclusive' || outcome === 'unresolved_hard_case') {
                         outcomeCellHtml = `<span style="color:var(--warn-text);">Unresolved</span>`;
                     } else {
                         outcomeCellHtml = `<span style="color:var(--text-muted);">${escapeHtml(outcome || 'Unverified')}</span>`;
@@ -6143,31 +6144,31 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                                 </div>
                             `);
                         });
-                    } else if (vKind === 'hard_case') {
+                    } else if (vKind === 'inconclusive' || vKind === 'hard_case') {
                         const pvStage = t.post_verification_stage ? String(t.post_verification_stage) : 'post-verification';
                         const isSingleUncontestedConcern = rawCIds.length === 1 && rawDIds.length === 0;
-                        vIds.forEach(hid => {
-                            const hc = hcById.get(String(hid));
-                            if (!hc) return;
-                            if (Array.isArray(hc.locations) && hc.locations.length > 0) primaryLocations = hc.locations;
+                        vIds.forEach(iid => {
+                            const ic = icById.get(String(iid));
+                            if (!ic) return;
+                            if (Array.isArray(ic.locations) && ic.locations.length > 0) primaryLocations = ic.locations;
                             // For a single uncontested raw concern (1 C*, 0 D*, empty dismissal_arguments),
                             // the raw stage's full reasoning is already shown in the step immediately above;
                             // for merged concerns, contested signals, or promoted dismissals, include
                             // verification's synthesized concern_arguments and dismissal_arguments.
-                            const hcParts = [];
-                            const hasSynthesis = !isSingleUncontestedConcern || Boolean(hc.dismissal_arguments);
-                            if (hasSynthesis && hc.concern_arguments) {
-                                hcParts.push(`Concern arguments: ${String(hc.concern_arguments).trim()}`);
+                            const icParts = [];
+                            const hasSynthesis = !isSingleUncontestedConcern || Boolean(ic.dismissal_arguments);
+                            if (hasSynthesis && ic.concern_arguments) {
+                                icParts.push(`Concern arguments: ${String(ic.concern_arguments).trim()}`);
                             }
-                            if (hc.dismissal_arguments) {
-                                hcParts.push(`Dismissal arguments: ${String(hc.dismissal_arguments).trim()}`);
+                            if (ic.dismissal_arguments) {
+                                icParts.push(`Dismissal arguments: ${String(ic.dismissal_arguments).trim()}`);
                             }
-                            if (hc.verification_question) {
-                                hcParts.push(hcParts.length > 0
-                                    ? `Verification question: ${String(hc.verification_question).trim()}`
-                                    : String(hc.verification_question).trim());
+                            if (ic.verification_question) {
+                                icParts.push(icParts.length > 0
+                                    ? `Verification question: ${String(ic.verification_question).trim()}`
+                                    : String(ic.verification_question).trim());
                             }
-                            const hcBody = hcParts.join('\n\n');
+                            const icBody = icParts.join('\n\n');
                             historySteps.push(`
                                 <div style="margin-top:8px;">
                                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
@@ -6177,7 +6178,7 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                                         </span>
                                         ${renderStageLogLink('verification')}
                                     </div>
-                                    ${hcBody ? `<div class="log-inline-block">${escapeHtml(hcBody)}</div>` : ''}
+                                    ${icBody ? `<div class="log-inline-block">${escapeHtml(icBody)}</div>` : ''}
                                 </div>
                             `);
                         });
@@ -6277,7 +6278,7 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                         let outputParts = [];
                         if (s.name === 'verification') {
                             if (verifFindings.length > 0) outputParts.push(`${verifFindings.length} ${verifFindings.length === 1 ? 'finding' : 'findings'}`);
-                            if (hardCases.length > 0) outputParts.push(`${hardCases.length} ${hardCases.length === 1 ? 'hard case' : 'hard cases'}`);
+                            if (inconclusiveConcerns.length > 0) outputParts.push(`${inconclusiveConcerns.length} inconclusive`);
                             if (verifDismissed.length > 0) outputParts.push(`${verifDismissed.length} dismissed`);
                         } else if (String(s.name || '').startsWith('post-verification')) {
                             const cCount = s.concerns_count || 0;
