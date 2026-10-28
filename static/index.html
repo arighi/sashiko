@@ -6038,8 +6038,8 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                         outcomeCellHtml = `<span class="tag" style="border:1px solid ${sevColor}; color:${sevColor}; background:transparent; font-weight:bold;">${escapeHtml(sev)}</span>`;
                     } else if (outcome === 'preexisting_concern') {
                         outcomeCellHtml = `<span class="tag" style="border:1px solid ${sevColor}; color:${sevColor}; background:transparent; font-weight:bold;">${escapeHtml(sev)}</span> <span class="tag">Pre-existing</span>`;
-                    } else if (outcome === 'refuted_hard_case') {
-                        outcomeCellHtml = `<span style="color:var(--text-muted);">Refuted</span>`;
+                    } else if (outcome === 'dismissed_post_verification' || outcome === 'refuted_hard_case') {
+                        outcomeCellHtml = `<span style="color:var(--text-muted);">Dismissed</span>`;
                     } else if (outcome === 'dismissed_1b' || outcome === 'unverified_dismissed') {
                         outcomeCellHtml = `<span style="color:var(--text-muted);">Dismissed</span>`;
                     } else if (outcome === 'unresolved_hard_case') {
@@ -6212,7 +6212,7 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
                                             <span>
                                                 <span class="tag">${escapeHtml(pvStage)}</span>
-                                                <span class="text-muted-sm">Refuted</span>
+                                                <span class="text-muted-sm">Dismissed</span>
                                             </span>
                                             ${renderStageLogLink(pvStage)}
                                         </div>
@@ -6283,7 +6283,7 @@ ${escapeHtml((data.body || '(no body)').replace(/\n+$/, ''), true, false)}${data
                             const cCount = s.concerns_count || 0;
                             const dCount = s.dismissed_count || 0;
                             if (cCount > 0) outputParts.push(`${cCount} confirmed`);
-                            if (dCount > 0) outputParts.push(`${dCount} refuted`);
+                            if (dCount > 0) outputParts.push(`${dCount} dismissed`);
                         } else {
                             const cCount = s.concerns_count || 0;
                             const dCount = s.dismissed_count || 0;

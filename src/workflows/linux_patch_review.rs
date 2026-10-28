@@ -82,7 +82,7 @@ pub struct LinuxPatchReviewState {
     pub verification_dismissed: Vec<Value>,
     /// Findings confirmed by parallel post-verification stages (PVF1..PVFr).
     pub post_verification_findings: Vec<Value>,
-    /// Hard cases refuted by parallel post-verification stages (PVD1..PVDs).
+    /// Hard cases dismissed by parallel post-verification stages (PVD1..PVDs).
     pub post_verification_dismissed: Vec<Value>,
 
     /// Deduplicated dismissed concerns from the verification stage.

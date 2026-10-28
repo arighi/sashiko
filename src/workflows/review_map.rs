@@ -98,7 +98,7 @@ fn outcome_rank(outcome: &str) -> u8 {
     match outcome {
         "finding" => 6,
         "preexisting_concern" => 5,
-        "refuted_hard_case" => 4,
+        "dismissed_post_verification" => 4,
         "unresolved_hard_case" => 3,
         "dismissed_1b" => 2,
         "unverified_concern" => 1,
@@ -363,7 +363,7 @@ fn stage_signal_counts(state: &LinuxPatchReviewState, stage_name: &str) -> (usiz
                     == Some(stage_name)
             })
             .count();
-        let refuted = state
+        let dismissed = state
             .post_verification_dismissed
             .iter()
             .filter(|d| {
@@ -373,7 +373,7 @@ fn stage_signal_counts(state: &LinuxPatchReviewState, stage_name: &str) -> (usiz
                     == Some(stage_name)
             })
             .count();
-        return (confirmed, refuted);
+        return (confirmed, dismissed);
     }
 
     let concerns = state
@@ -486,7 +486,7 @@ fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
         }));
     }
 
-    // 2b. Post-verification refuted hard cases (PVD*)
+    // 2b. Hard cases dismissed in post-verification (PVD*)
     for pvd in &state.post_verification_dismissed {
         let pvd_id = pvd.get("id").and_then(Value::as_str).map(str::to_string);
         let h_ids: Vec<String> = extract_string_array(pvd, "source_ids")
@@ -506,7 +506,7 @@ fn build_threads(state: &LinuxPatchReviewState) -> Vec<Value> {
             .and_then(Value::as_str);
 
         threads.push(json!({
-            "outcome": "refuted_hard_case",
+            "outcome": "dismissed_post_verification",
             "title": item_title(pvd),
             "type": item_type(pvd, state),
             "severity": item_severity(pvd, &state.hard_cases),
@@ -826,14 +826,14 @@ mod tests {
 
         let threads = map["threads"].as_array().unwrap();
         assert_eq!(threads.len(), 3);
-        // Confirmed finding first, then refuted hard case, then 1b dismissal
+        // Confirmed finding first, then post-verification dismissal, then 1b dismissal
         assert_eq!(threads[0]["thread_id"], "T1");
         assert_eq!(threads[0]["outcome"], "finding");
         assert_eq!(threads[0]["type"], "Logic Defect");
         assert_eq!(threads[0]["raw_concern_ids"], json!(["C1"]));
 
         assert_eq!(threads[1]["thread_id"], "T2");
-        assert_eq!(threads[1]["outcome"], "refuted_hard_case");
+        assert_eq!(threads[1]["outcome"], "dismissed_post_verification");
         assert_eq!(threads[1]["verification_id"], "H1");
         assert_eq!(threads[1]["post_verification_id"], "PVD1");
         assert_eq!(threads[1]["raw_concern_ids"], json!(["C2"]));
