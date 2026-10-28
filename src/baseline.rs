@@ -734,6 +734,9 @@ fn is_non_linux_project_url(url: &str) -> bool {
     lower.contains("gcc.gnu.org")
         || lower.contains("gnutools/gcc")
         || lower.contains("gcc-mirror/gcc")
+        || lower.contains("qemu-project/qemu")
+        || lower.contains("qemu.org")
+        || lower.contains("qemu/qemu")
         || lower.contains("sashiko")
 }
 
@@ -1725,6 +1728,29 @@ F: patterns/
             candidates,
             vec![BaselineResolution::RemoteTarget {
                 url: "https://gcc.gnu.org/git/gcc.git".to_string(),
+                name: "origin".to_string(),
+                branch: Some("master".to_string()),
+            }]
+        );
+
+        let qemu_registry = BaselineRegistry {
+            entries: Vec::new(),
+            remote_map: HashMap::new(),
+            custom_remotes: None,
+            repo_path: repo_path.to_path_buf(),
+            mainline_remote: Some((
+                "https://gitlab.com/qemu-project/qemu.git".to_string(),
+                "origin".to_string(),
+            )),
+        };
+
+        let qemu_candidates = qemu_registry
+            .resolve_candidates(&[], "[PATCH] target/riscv: fix CSR write", None)
+            .await;
+        assert_eq!(
+            qemu_candidates,
+            vec![BaselineResolution::RemoteTarget {
+                url: "https://gitlab.com/qemu-project/qemu.git".to_string(),
                 name: "origin".to_string(),
                 branch: Some("master".to_string()),
             }]

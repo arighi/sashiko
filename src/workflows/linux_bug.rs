@@ -2926,9 +2926,10 @@ async fn run_git_query_capped(
 
 /// Resolves the current HEAD commit SHA of the upstream mainline tree in `repo_path`.
 ///
-/// Prefers a remote whose URL matches `torvalds/linux`, `gcc.gnu.org/git/gcc`, or
-/// `gnutools/gcc` (`{name}/master`) or `sashiko-dev/sashiko` (`{name}/main`), falling back to
-/// `origin/master`, `origin/main`, `master`, `main`, and `HEAD`.
+/// Prefers a remote whose URL matches `torvalds/linux`, `gcc.gnu.org/git/gcc`,
+/// `gnutools/gcc`, `qemu-project/qemu`, or `qemu/qemu` (`{name}/master`) or
+/// `sashiko-dev/sashiko` (`{name}/main`), falling back to `origin/master`,
+/// `origin/main`, `master`, `main`, and `HEAD`.
 pub async fn resolve_linus_sha(repo_path: &std::path::Path) -> Option<String> {
     let mut candidate_refs = Vec::new();
     match run_git_query(repo_path, &["remote", "-v"]).await {
@@ -2940,6 +2941,9 @@ pub async fn resolve_linus_sha(repo_path: &std::path::Path) -> Option<String> {
                     if url.contains("torvalds/linux")
                         || url.contains("gcc.gnu.org/git/gcc")
                         || url.contains("gnutools/gcc")
+                        || url.contains("qemu-project/qemu")
+                        || url.contains("qemu.org")
+                        || url.contains("qemu/qemu")
                     {
                         let r = format!("{}/master", name);
                         if !candidate_refs.contains(&r) {
